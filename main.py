@@ -5,8 +5,9 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask
 from threading import Thread
-from datetime import datetime
 import logging
+import time
+from datetime import datetime
 
 # --- MENGHENINGKAN LOG KOYEB ---
 log = logging.getLogger('werkzeug')
@@ -17,6 +18,8 @@ ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID", 0))
 KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME")
 
 bot = telebot.TeleBot(TOKEN)
+
+# Menyimpan status pengguna ('waiting_input' atau 'processing')
 user_states = {}
 
 def fmt_t(seconds):
@@ -24,7 +27,7 @@ def fmt_t(seconds):
     m, s = divmod(r, 60)
     return f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
 
-# --- KODE PEKERJA CLOUD (KAGGLE - MULTI PLATFORM) ---
+# --- KODE PEKERJA CLOUD (KAGGLE) ---
 KAGGLE_WORKER_CODE = r"""
 import os
 import subprocess
@@ -44,6 +47,12 @@ def fmt_t(seconds):
     h, r = divmod(int(seconds), 3600)
     m, s = divmod(r, 60)
     return f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
+
+# FUNGSI BARU: Penangkap Error Presisi
+def run_cmd(cmd):
+    res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    if res.returncode != 0:
+        raise Exception(f"Perintah Gagal:\n{res.stderr}")
 
 def analyze_video(video_path, requested_pos):
     import cv2
@@ -107,22 +116,20 @@ def analyze_video(video_path, requested_pos):
 def main_process():
     edit_msg("Menyiapkan Mesin Cloud & AI...", 10)
     if FACE_POS in ['auto', 'br', 'bl', 'tr', 'tl']:
-        subprocess.run("pip install -q --upgrade yt-dlp opencv-python-headless mediapipe numpy", shell=True, check=True)
+        run_cmd("pip install -q --upgrade yt-dlp opencv-python-headless mediapipe numpy")
     else:
-        subprocess.run("pip install -q --upgrade yt-dlp", shell=True, check=True)
+        run_cmd("pip install -q --upgrade yt-dlp")
 
-    # ALUR 1: MANUAL TIME (BERLAKU UNTUK SEMUA PLATFORM YOUTUBE/TWITCH/KICK DLL)
+    # BUG FIX KICK/TWITCH: URL Diapit tanda kutip "{URL}" dan ditambah --force-keyframes-at-cuts
     if MANUAL_TIME != "none":
         edit_msg(f"Mengunduh cuplikan [{MANUAL_TIME}]...", 30)
-        # BUG FIX: Menggunakan merge-output-format mp4 agar format Twitch/Kick (mkv/ts) dipaksa menjadi mp4
-        dl_cmd = f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{MANUAL_TIME}" -o "input.mp4" {URL}'
-        subprocess.run(dl_cmd, shell=True, check=True)
+        dl_cmd = f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{MANUAL_TIME}" --force-keyframes-at-cuts -o "input.mp4" "{URL}"'
+        run_cmd(dl_cmd)
 
-    # ALUR 2: AUTO HEATMAP (KHUSUS YOUTUBE)
     else:
         edit_msg("Memindai Grafik YouTube (Mencari Top 5)...", 20)
         try:
-            info_json = subprocess.check_output(f'yt-dlp --dump-json {URL}', shell=True, text=True)
+            info_json = subprocess.check_output(f'yt-dlp --dump-json "{URL}"', shell=True, text=True)
             info = json.loads(info_json)
             heatmap = info.get('heatmap')
             if heatmap:
@@ -148,21 +155,18 @@ def main_process():
                         data={"chat_id": CHAT_ID, "text": ref_text, "parse_mode": "Markdown"})
                     
                     edit_msg(f"Mengunduh cuplikan Juara 1...", 40)
-                    dl_cmd = f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{peak1_s}-{peak1_e}" -o "input.mp4" {URL}'
-                    subprocess.run(dl_cmd, shell=True, check=True)
+                    dl_cmd = f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{peak1_s}-{peak1_e}" --force-keyframes-at-cuts -o "input.mp4" "{URL}"'
+                    run_cmd(dl_cmd)
                 else:
                     edit_msg("Heatmap tidak valid. Mengunduh 1 menit pertama...", 40)
-                    subprocess.run(f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" {URL}', shell=True, check=True)
+                    run_cmd(f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
             else:
                 edit_msg("Video tanpa Heatmap. Mengunduh 1 menit pertama...", 40)
-                subprocess.run(f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" {URL}', shell=True, check=True)
+                run_cmd(f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
         except Exception:
             edit_msg("Gagal baca Heatmap. Mengunduh 1 menit pertama...", 40)
-            subprocess.run(f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" {URL}', shell=True, check=True)
+            run_cmd(f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
 
-    # ===============================
-    # TAHAP ANALISIS & RENDER VIDEO
-    # ===============================
     if FACE_POS == "pad": mode, data = "pad", None
     elif FACE_POS in ['auto', 'br', 'bl', 'tr', 'tl']:
         edit_msg("AI memindai tata letak objek...", 60)
@@ -190,12 +194,11 @@ def main_process():
         fx = data if isinstance(data, (float, int)) else 0.5
         cmd = f'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih:iw*{fx}-ow/2:0" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
         
-    subprocess.run(cmd, shell=True, check=True)
+    run_cmd(cmd)
     edit_msg("Selesai! Mengunggah hasil ke Telegram...", 100)
     with open("output.mp4", 'rb') as f:
         requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo", data={"chat_id": CHAT_ID, "caption": "✅ Berhasil diproses oleh Mesin Cloud!"}, files={"video": f})
 
-# GLOBAL FAILSAFE
 try:
     main_process()
 except Exception as e:
@@ -205,22 +208,11 @@ except Exception as e:
         data={"chat_id": CHAT_ID, "message_id": MSG_ID, "text": f"❌ Terjadi Kesalahan Sistem:\n\n{safe_error}"})
 """
 
-# --- 3. ALUR BOT TELEGRAM ---
+# --- 3. ALUR BOT TELEGRAM & FLOW SECURITY ---
 
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    if message.chat.id != ALLOWED_USER_ID: return
-    bot.reply_to(message, "🤖 *Pabrik Video Aktif!*\nKirimkan link YouTube, Twitch, atau Kick untuk memulai.", parse_mode="Markdown")
-
-# PERUBAHAN: Sekarang bot menerima link apapun yang diawali "http"
-@bot.message_handler(func=lambda message: message.text.strip().startswith("http"))
-def handle_url(message):
-    if message.chat.id != ALLOWED_USER_ID: return
-    
-    url = message.text.strip().split()[0]
-    # Deteksi apakah ini platform YouTube atau bukan
+def start_new_session(chat_id, url):
     is_youtube = any(domain in url.lower() for domain in ['youtube.com', 'youtu.be'])
-    user_states[message.chat.id] = {'url': url, 'is_youtube': is_youtube}
+    user_states[chat_id] = {'url': url, 'is_youtube': is_youtube, 'status': 'waiting_input'}
 
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -230,7 +222,42 @@ def handle_url(message):
         InlineKeyboardButton("🎯 Facecam Kanan", callback_data="mode_br"),
         InlineKeyboardButton("🎯 Facecam Kiri", callback_data="mode_bl")
     )
-    bot.reply_to(message, "⚙️ *Langkah 1: Pilih Tata Letak Layar*", reply_markup=markup, parse_mode="Markdown")
+    bot.send_message(chat_id, "⚙️ *Langkah 1: Pilih Tata Letak Layar*", reply_markup=markup, parse_mode="Markdown")
+
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    if message.chat.id != ALLOWED_USER_ID: return
+    bot.reply_to(message, "🤖 *Pabrik Video Aktif!*\nKirimkan link YouTube, Twitch, atau Kick untuk memulai.", parse_mode="Markdown")
+
+@bot.message_handler(func=lambda message: message.text.strip().startswith("http"))
+def handle_url(message):
+    if message.chat.id != ALLOWED_USER_ID: return
+    
+    url = message.text.strip().split()[0]
+    chat_id = message.chat.id
+    
+    # SISTEM KEAMANAN FLOW (CEK STATUS)
+    if chat_id in user_states:
+        if user_states[chat_id].get('status') == 'processing':
+            bot.reply_to(message, "⏳ Harap tunggu proses sebelumnya selesai...")
+            return
+        else:
+            # Jika user sedang di tahap pilih tombol tapi ngirim URL baru
+            user_states[chat_id]['pending_url'] = url
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("✅ Ya", callback_data="cancel_prev"))
+            bot.reply_to(message, "⚠️ Ada proses yang belum dilanjutkan. Batalkan proses sebelumnya?", reply_markup=markup)
+            return
+
+    start_new_session(chat_id, url)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'cancel_prev')
+def handle_cancel_prev(call):
+    chat_id = call.message.chat.id
+    if chat_id in user_states and 'pending_url' in user_states[chat_id]:
+        new_url = user_states[chat_id]['pending_url']
+        bot.delete_message(chat_id, call.message.message_id)
+        start_new_session(chat_id, new_url)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('mode_'))
 def handle_mode_selection(call):
@@ -241,26 +268,19 @@ def handle_mode_selection(call):
     is_youtube = user_states[chat_id].get('is_youtube', False)
     
     markup = InlineKeyboardMarkup()
-    
-    # UI DINAMIS: Jika YouTube, berikan tombol Auto Viral
     if is_youtube:
-        markup.add(InlineKeyboardButton("🚀 Proses Auto Viral (Ambil Juara 1)", callback_data="run_auto"))
+        markup.add(InlineKeyboardButton("🚀 Proses Auto Viral", callback_data="run_auto"))
         msg_text = "⏱️ *Langkah 2: Pilih Durasi Waktu*\n\nKlik tombol *Proses Auto* untuk memotong momen teramai, *ATAU* ketik langsung durasi manual di chat ini (Contoh: `01:10:00-01:11:00`)."
-    # Jika Twitch/Kick, sembunyikan tombol Auto dan minta manual
     else:
-        msg_text = "⏱️ *Langkah 2: Masukkan Durasi Manual*\n\nKarena ini bukan YouTube, fitur Auto-Viral tidak tersedia.\n\nSilakan ketik langsung rentang waktu video di chat ini untuk dipotong (Contoh: `01:10:00-01:11:00`)."
+        msg_text = "⏱️ *Langkah 2: Masukkan Durasi Manual*\n\nKarena ini bukan YouTube, ketik langsung rentang waktu video di chat ini untuk dipotong (Contoh: `01:10:00-01:11:00`)."
     
-    bot.edit_message_text(
-        text=msg_text, chat_id=chat_id, message_id=call.message.message_id, 
-        reply_markup=markup if is_youtube else None, parse_mode="Markdown"
-    )
+    bot.edit_message_text(text=msg_text, chat_id=chat_id, message_id=call.message.message_id, 
+                          reply_markup=markup if is_youtube else None, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data == 'run_auto')
 def trigger_auto_run(call):
     chat_id = call.message.chat.id
-    if chat_id not in user_states: 
-        bot.answer_callback_query(call.id, "⚠️ Sesi kadaluarsa. Kirim ulang link.", show_alert=True)
-        return
+    if chat_id not in user_states: return
         
     msg = bot.edit_message_text("[░░░░░░░░░░] 0% - Mengirim tugas ke Mesin Cloud...", 
                           chat_id=chat_id, message_id=call.message.message_id)
@@ -273,10 +293,29 @@ def handle_manual_time(message):
     msg = bot.send_message(chat_id, "[░░░░░░░░░░] 0% - Mengirim tugas manual ke Mesin Cloud...")
     dispatch_kaggle_task(chat_id, msg.message_id, manual_time=manual_time)
 
+# BACKGROUND THREAD: Mengawasi Kaggle agar Koyeb tahu kapan render selesai
+def monitor_kaggle_task(chat_id, slug_id):
+    fail_count = 0
+    while fail_count < 10:
+        time.sleep(20) # Cek status setiap 20 detik
+        try:
+            res = subprocess.check_output(["kaggle", "kernels", "status", f"{KAGGLE_USERNAME}/{slug_id}"], text=True)
+            if any(x in res.lower() for x in ["complete", "error", "cancel"]):
+                if chat_id in user_states: del user_states[chat_id]
+                break
+        except Exception:
+            fail_count += 1
+            if fail_count >= 10:
+                if chat_id in user_states: del user_states[chat_id]
+                break
+
 def dispatch_kaggle_task(chat_id, msg_id, manual_time):
     state = user_states.get(chat_id, {})
     url = state.get('url', '')
     face_pos = state.get('mode', 'auto')
+    
+    # Kunci antrean agar user tidak bisa memencet/spam link baru
+    user_states[chat_id]['status'] = 'processing'
     
     os.makedirs("kaggle_task", exist_ok=True)
     worker_vars = f'URL = "{url}"\nCHAT_ID = "{chat_id}"\nMSG_ID = "{msg_id}"\nBOT_TOKEN = "{TOKEN}"\nMANUAL_TIME = "{manual_time}"\nFACE_POS = "{face_pos}"\n'
@@ -293,9 +332,11 @@ def dispatch_kaggle_task(chat_id, msg_id, manual_time):
 
     try:
         subprocess.run(["kaggle", "kernels", "push", "-p", "kaggle_task"], check=True)
-        del user_states[chat_id] 
+        # Mulai Thread Pengawas Kaggle di Latar Belakang
+        Thread(target=monitor_kaggle_task, args=(chat_id, slug_id)).start()
     except Exception:
         bot.edit_message_text("❌ Gagal terhubung ke Cloud Engine.", chat_id=chat_id, message_id=msg_id)
+        del user_states[chat_id]
 
 # --- 4. WEB SERVER ---
 app = Flask(__name__)
