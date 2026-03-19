@@ -58,7 +58,7 @@ def run_worker():
                     
                     if top_peaks:
                         # Buat daftar Top 3 untuk dikirim ke Telegram
-                        msg = "🔥 Top Momen Paling Replayed:\n"
+                        msg = "🔥 Top Momen Paling Replayed:\\n"
                         for i, t in enumerate(top_peaks, 1):
                             mins, secs = divmod(t, 60)
                             msg += f"{i}. Menit {mins:02d}:{secs:02d}\\n"
