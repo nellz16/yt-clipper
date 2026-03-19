@@ -96,6 +96,24 @@ def handle_youtube_link(message):
     except subprocess.CalledProcessError as e:
         bot.send_message(message.chat.id, f"❌ Gagal memicu Kaggle. Pastikan KAGGLE_USERNAME dan KAGGLE_KEY di Environment Variables sudah benar.\nError: {e}")
 
-# Jalankan bot secara terus menerus (Polling)
-print("Bot menyala dan memantau chat...")
-bot.infinity_polling()
+# --- 4. DUMMY WEB SERVER UNTUK KOYEB ---
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    # Halaman ini yang akan di-ping oleh UptimeRobot setiap 20 menit
+    return "Bot YouTube Clipper sedang berjalan aktif!"
+
+def run_web_server():
+    # Koyeb menggunakan environment variable PORT, defaultnya 8000
+    port = int(os.environ.get("PORT", 8000))
+    app.run(host="0.0.0.0", port=port)
+
+if __name__ == "__main__":
+    # Jalankan Web Server di "jalur" (thread) terpisah
+    server_thread = Thread(target=run_web_server)
+    server_thread.start()
+    
+    # Jalankan Bot Telegram di jalur utama
+    print("Bot menyala...")
+    bot.infinity_polling()
