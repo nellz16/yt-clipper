@@ -7,10 +7,6 @@ from flask import Flask
 from threading import Thread
 import logging
 import time
-from datetime import datetime
-
-# Menggunakan Python API resmi Kaggle untuk menghapus task
-from kaggle.api.kaggle_api_extended import KaggleApi
 
 # --- MENGHENINGKAN LOG KOYEB ---
 log = logging.getLogger('werkzeug')
@@ -21,11 +17,6 @@ ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID", 0))
 KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME")
 
 bot = telebot.TeleBot(TOKEN)
-
-# Otentikasi Kaggle API (Digunakan khusus untuk menghancurkan Task)
-api = KaggleApi()
-api.authenticate()
-
 user_states = {}
 
 def fmt_t(seconds):
@@ -33,8 +24,8 @@ def fmt_t(seconds):
     m, s = divmod(r, 60)
     return f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
 
-# --- KODE PEKERJA CLOUD (KAGGLE) ---
-KAGGLE_WORKER_CODE = r"""
+# --- KODE PEKERJA CLOUD (MESIN PENGGERAK UTAMA) ---
+CLOUD_WORKER_CODE = r"""
 import os
 import subprocess
 import requests
@@ -122,22 +113,21 @@ def main_process():
     edit_msg("Menyiapkan Mesin Cloud & AI...", 10)
     
     if FACE_POS in ['auto', 'br', 'bl', 'tr', 'tl']:
-        run_cmd("pip install -q --upgrade yt-dlp opencv-python-headless mediapipe numpy")
+        run_cmd('pip install -q -U "yt-dlp[curl-cffi]>=2026.03.17" opencv-python-headless mediapipe numpy')
     else:
-        run_cmd("pip install -q --upgrade yt-dlp")
+        run_cmd('pip install -q -U "yt-dlp[curl-cffi]>=2026.03.17"')
 
-    # ALUR 1: MANUAL TIME (Twitch & Kick masuk ke sini)
+    impersonate_target = '--impersonate "safari"' if "kick.com" in URL else '--impersonate "chrome"'
+
     if MANUAL_TIME != "none":
         edit_msg(f"Mengunduh cuplikan [{MANUAL_TIME}]...", 30)
-        # yt-dlp otomatis menangani GraphQL Twitch dan .m3u8 Kick secara langsung
-        dl_cmd = f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{MANUAL_TIME}" --force-keyframes-at-cuts -o "input.mp4" "{URL}"'
+        dl_cmd = f'yt-dlp {impersonate_target} -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{MANUAL_TIME}" --force-keyframes-at-cuts -o "input.mp4" "{URL}"'
         run_cmd(dl_cmd)
 
-    # ALUR 2: AUTO HEATMAP (KHUSUS YOUTUBE)
     else:
-        edit_msg("Memindai Grafik YouTube (Mencari Top 5)...", 20)
+        edit_msg("Memindai Grafik Keramaian (Mencari Top 5)...", 20)
         try:
-            info_json = subprocess.check_output(f'yt-dlp --dump-json "{URL}"', shell=True, text=True)
+            info_json = subprocess.check_output(f'yt-dlp {impersonate_target} --dump-json "{URL}"', shell=True, text=True)
             info = json.loads(info_json)
             heatmap = info.get('heatmap')
             if heatmap:
@@ -163,21 +153,18 @@ def main_process():
                         data={"chat_id": CHAT_ID, "text": ref_text, "parse_mode": "Markdown"})
                     
                     edit_msg(f"Mengunduh cuplikan Juara 1...", 40)
-                    dl_cmd = f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{peak1_s}-{peak1_e}" --force-keyframes-at-cuts -o "input.mp4" "{URL}"'
+                    dl_cmd = f'yt-dlp {impersonate_target} -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{peak1_s}-{peak1_e}" --force-keyframes-at-cuts -o "input.mp4" "{URL}"'
                     run_cmd(dl_cmd)
                 else:
                     edit_msg("Heatmap tidak valid. Mengunduh 1 menit pertama...", 40)
-                    run_cmd(f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
+                    run_cmd(f'yt-dlp {impersonate_target} -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
             else:
                 edit_msg("Video tanpa Heatmap. Mengunduh 1 menit pertama...", 40)
-                run_cmd(f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
+                run_cmd(f'yt-dlp {impersonate_target} -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
         except Exception:
             edit_msg("Gagal baca Heatmap. Mengunduh 1 menit pertama...", 40)
-            run_cmd(f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
+            run_cmd(f'yt-dlp {impersonate_target} -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
 
-    # ===============================
-    # TAHAP ANALISIS & RENDER VIDEO
-    # ===============================
     if FACE_POS == "pad": mode, data = "pad", None
     elif FACE_POS in ['auto', 'br', 'bl', 'tr', 'tl']:
         edit_msg("AI memindai tata letak objek...", 60)
@@ -219,7 +206,7 @@ except Exception as e:
         data={"chat_id": CHAT_ID, "message_id": MSG_ID, "text": f"❌ Terjadi Kesalahan Sistem:\n\n{safe_error}"})
 """
 
-# --- 3. ALUR BOT TELEGRAM & AUTO DELETE API ---
+# --- 3. ALUR BOT TELEGRAM ---
 
 def start_new_session(chat_id, url):
     platform = user_states[chat_id]['platform']
@@ -246,7 +233,7 @@ def send_welcome(message):
         InlineKeyboardButton("🟪 Twitch", callback_data="platform_twitch"),
         InlineKeyboardButton("🟢 Kick (M3U8 Backdoor)", callback_data="platform_kick")
     )
-    bot.reply_to(message, "🤖 *Pabrik Video Aktif!*\n\nSilakan pilih platform sumber video:", reply_markup=markup, parse_mode="Markdown")
+    bot.reply_to(message, "🤖 *Cloud Video Engine Aktif!*\n\nSilakan pilih platform sumber video:", reply_markup=markup, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('platform_'))
 def handle_platform_selection(call):
@@ -271,7 +258,6 @@ def handle_url(message):
     chat_id = message.chat.id
     if chat_id != ALLOWED_USER_ID: return
     
-    # Keamanan Antrean & Batal
     if chat_id in user_states:
         if user_states[chat_id].get('status') == 'processing':
             bot.reply_to(message, "⏳ Harap tunggu proses sebelumnya selesai...")
@@ -290,7 +276,6 @@ def handle_url(message):
     url = message.text.strip().split()[0]
     platform = user_states[chat_id].get('platform')
 
-    # VALIDASI LINK
     if platform == "youtube" and not any(domain in url.lower() for domain in ['youtube.com', 'youtu.be']):
         bot.reply_to(message, "❌ Link salah! Ini adalah Mode YouTube.")
         return
@@ -308,9 +293,8 @@ def handle_cancel_prev(call):
     chat_id = call.message.chat.id
     if chat_id in user_states and 'pending_url' in user_states[chat_id]:
         new_url = user_states[chat_id]['pending_url']
-        user_states[chat_id]['status'] = 'waiting_url' # Kembalikan state
+        user_states[chat_id]['status'] = 'waiting_url'
         bot.delete_message(chat_id, call.message.message_id)
-        # Validasi ulang URL pending
         handle_url(type('obj', (object,), {'text': new_url, 'chat': type('obj', (object,), {'id': chat_id})})())
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('mode_'))
@@ -338,44 +322,32 @@ def trigger_auto_run(call):
         
     msg = bot.edit_message_text("[░░░░░░░░░░] 0% - Mengirim tugas ke Mesin Cloud...", 
                           chat_id=chat_id, message_id=call.message.message_id)
-    dispatch_kaggle_task(chat_id, msg.message_id, manual_time="none")
+    dispatch_cloud_task(chat_id, msg.message_id, manual_time="none")
 
 @bot.message_handler(func=lambda message: "-" in message.text and message.chat.id in user_states and 'mode' in user_states[message.chat.id])
 def handle_manual_time(message):
     chat_id = message.chat.id
     manual_time = message.text.strip()
     msg = bot.send_message(chat_id, "[░░░░░░░░░░] 0% - Mengirim tugas manual ke Mesin Cloud...")
-    dispatch_kaggle_task(chat_id, msg.message_id, manual_time=manual_time)
+    dispatch_cloud_task(chat_id, msg.message_id, manual_time=manual_time)
 
-# PENGAWAS BACKGROUND + AUTO DELETE VIA KAGGLE API PURE
-def monitor_kaggle_task(chat_id, slug_id):
+# PENGAWAS BACKGROUND
+def monitor_cloud_task(chat_id, slug_id):
     fail_count = 0
     while fail_count < 15:
         time.sleep(20)
         try:
-            # Tetap gunakan CLI ringan untuk cek status
             res = subprocess.check_output(["kaggle", "kernels", "status", f"{KAGGLE_USERNAME}/{slug_id}"], text=True)
             if any(x in res.lower() for x in ["complete", "error", "cancel"]):
-                # 1. Bersihkan State Chat
                 if chat_id in user_states: del user_states[chat_id]
-                
-                # 2. EKSEKUSI PENGHAPUSAN TASK DARI SERVER
-                try:
-                    api.kernel_delete(KAGGLE_USERNAME, slug_id)
-                    print(f"✅ Tugas {slug_id} sukses dihapus otomatis dari server Kaggle.")
-                except Exception as e:
-                    print(f"⚠️ Gagal menghapus task Kaggle: {str(e)}")
                 break
         except Exception:
             fail_count += 1
             if fail_count >= 15:
                 if chat_id in user_states: del user_states[chat_id]
-                try:
-                    api.kernel_delete(KAGGLE_USERNAME, slug_id)
-                except: pass
                 break
 
-def dispatch_kaggle_task(chat_id, msg_id, manual_time):
+def dispatch_cloud_task(chat_id, msg_id, manual_time):
     state = user_states.get(chat_id, {})
     url = state.get('url', '')
     face_pos = state.get('mode', 'auto')
@@ -385,21 +357,28 @@ def dispatch_kaggle_task(chat_id, msg_id, manual_time):
     os.makedirs("kaggle_task", exist_ok=True)
     worker_vars = f'URL = "{url}"\nCHAT_ID = "{chat_id}"\nMSG_ID = "{msg_id}"\nBOT_TOKEN = "{TOKEN}"\nMANUAL_TIME = "{manual_time}"\nFACE_POS = "{face_pos}"\n'
     
-    with open("kaggle_task/script.py", "w") as f: f.write(worker_vars + KAGGLE_WORKER_CODE)
+    with open("kaggle_task/script.py", "w") as f: f.write(worker_vars + CLOUD_WORKER_CODE)
     
-    slug_id = f"worker-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    # KUNCI RAHASIA: Menggunakan Nama File (Slug) yang selalu sama persis!
+    slug_id = "video-processing-engine"
+    
     metadata = {
-      "id": f"{KAGGLE_USERNAME}/{slug_id}", "title": slug_id, "code_file": "script.py",
-      "language": "python", "kernel_type": "script", "is_private": "true",
-      "enable_gpu": "true", "enable_internet": "true"
+      "id": f"{KAGGLE_USERNAME}/{slug_id}", 
+      "title": "Video Processing Engine", 
+      "code_file": "script.py",
+      "language": "python", 
+      "kernel_type": "script", 
+      "is_private": "true",
+      "enable_gpu": "true", 
+      "enable_internet": "true"
     }
     with open("kaggle_task/kernel-metadata.json", "w") as f: json.dump(metadata, f)
 
     try:
         subprocess.run(["kaggle", "kernels", "push", "-p", "kaggle_task"], check=True)
-        Thread(target=monitor_kaggle_task, args=(chat_id, slug_id)).start()
+        Thread(target=monitor_cloud_task, args=(chat_id, slug_id)).start()
     except Exception:
-        bot.edit_message_text("❌ Gagal terhubung ke Cloud Engine.", chat_id=chat_id, message_id=msg_id)
+        bot.edit_message_text("❌ Gagal terhubung ke Mesin Cloud.", chat_id=chat_id, message_id=msg_id)
         if chat_id in user_states: del user_states[chat_id]
 
 # --- 4. WEB SERVER ---
