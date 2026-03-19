@@ -209,8 +209,9 @@ def scan_heatmap(call):
                           chat_id=chat_id, message_id=call.message.message_id, parse_mode="Markdown")
     
     # EKSTRAKSI HEATMAP DILAKUKAN LOKAL DI KOYEB
-    try:
-        info_json = subprocess.check_output(f'yt-dlp --dump-json {url}', shell=True, text=True)
+        try:
+        cmd_heatmap = f'yt-dlp --dump-json --client android {url}'
+        info_json = subprocess.check_output(cmd_heatmap, shell=True, text=True)
         info = json.loads(info_json)
         heatmap = info.get('heatmap')
         
