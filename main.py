@@ -13,13 +13,14 @@ KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME")
 
 bot = telebot.TeleBot(TOKEN)
 
-# --- 2. KODE PEKERJA KAGGLE (DENGAN AI OPENCV & MEDIAPIPE) ---
+# --- 2. KODE PEKERJA KAGGLE (DENGAN PLAN B OPEN-CV) ---
 KAGGLE_WORKER_CODE = """
 import os
 import subprocess
 import requests
 import traceback
 import json
+import importlib
 
 def send_telegram_msg(text):
     url_api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -27,52 +28,68 @@ def send_telegram_msg(text):
 
 def analyze_video(video_path):
     import cv2
-    import mediapipe as mp
     import numpy as np
-
-    mp_face_detection = mp.solutions.face_detection
+    
+    # Refresh cache memori Python setelah instalasi
+    importlib.invalidate_caches()
+    
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    face_boxes = []
-    # Ambil 15 sampel gambar dari video untuk dianalisis
     step = max(1, total_frames // 15)
+    face_boxes = []
 
-    with mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.4) as face_detection:
+    try:
+        # PLAN A: Gunakan Google MediaPipe (Sangat Akurat)
+        from mediapipe.python.solutions import face_detection as mp_faces
+        
+        with mp_faces.FaceDetection(model_selection=1, min_detection_confidence=0.4) as face_detection:
+            for i in range(15):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, i * step)
+                ret, frame = cap.read()
+                if not ret: break
+                
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = face_detection.process(rgb_frame)
+                
+                if results.detections:
+                    for detection in results.detections:
+                        bbox = detection.location_data.relative_bounding_box
+                        face_boxes.append((bbox.xmin, bbox.ymin, bbox.width, bbox.height))
+                        break
+    except Exception as e:
+        # PLAN B: Jika MediaPipe Error, gunakan OpenCV Haar Cascade (Anti-Gagal)
+        send_telegram_msg("⚠️ MediaPipe sibuk, mengalihkan ke sistem Mata AI Cadangan (OpenCV)...")
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         for i in range(15):
             cap.set(cv2.CAP_PROP_POS_FRAMES, i * step)
             ret, frame = cap.read()
             if not ret: break
             
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = face_detection.process(rgb_frame)
-            
-            if results.detections:
-                for detection in results.detections:
-                    bbox = detection.location_data.relative_bounding_box
-                    face_boxes.append((bbox.xmin, bbox.ymin, bbox.width, bbox.height))
-                    break # Hanya fokus ke wajah utama/terbesar
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+            if len(faces) > 0:
+                x, y, w, h = faces[0]
+                ih, iw, _ = frame.shape
+                face_boxes.append((x/iw, y/ih, w/iw, h/ih))
+                break
+
     cap.release()
 
     if not face_boxes:
-        return "irl", 0.5 # Default potong tengah jika tidak ada wajah
+        return "irl", 0.5 # Default potong tengah jika AI tidak menemukan wajah
 
-    # Hitung rata-rata posisi wajah agar stabil
     avg_box = np.mean(face_boxes, axis=0)
     xmin, ymin, w, h = avg_box
     face_center_x = xmin + (w / 2)
     
-    # Jika wajah memakan lebih dari 15% luas layar, ini adalah IRL Stream/Wajah Besar
     if w * h > 0.15:
         return "irl", face_center_x
 
-    # Mode Gameplay: Buat kotak crop wajah (Lebihkan 2.5x agar bahu ikut ter-crop)
     c_w = min(1.0, w * 2.5)
     c_h = min(1.0, h * 2.5)
     c_x = max(0.0, xmin - (c_w - w)/2)
     c_y = max(0.0, ymin - (c_h - h)/2)
     
-    # Pastikan kotak tidak keluar dari batas layar
     if c_x + c_w > 1.0: c_x = 1.0 - c_w
     if c_y + c_h > 1.0: c_y = 1.0 - c_h
     
@@ -80,10 +97,9 @@ def analyze_video(video_path):
 
 def run_worker():
     try:
-        send_telegram_msg("⚙️ Memulai AI: Instalasi yt-dlp, OpenCV, & MediaPipe...")
-        subprocess.run("pip install -q yt-dlp opencv-python-headless mediapipe numpy", shell=True, check=True)
+        send_telegram_msg("⚙️ Memulai AI: Instalasi sistem dan menyegarkan memori...")
+        subprocess.run("pip install -q --upgrade yt-dlp opencv-python-headless mediapipe numpy", shell=True, check=True)
         
-        # --- LOGIKA MODE MANUAL VS HEATMAP ---
         if MANUAL_TIME != "none":
             send_telegram_msg(f"⏱️ Mode Manual Aktif! Memotong pada durasi: {MANUAL_TIME}")
             download_section = f'--download-sections "*{MANUAL_TIME}"'
@@ -126,25 +142,21 @@ def run_worker():
             except Exception:
                 download_section = '--download-sections "*0-60"'
         
-        # --- UNDUH VIDEO ---
         send_telegram_msg("⬇️ Sedang mengunduh klip video...")
         download_cmd = f'yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" {download_section} -o "input.mp4" {URL}'
         subprocess.run(download_cmd, shell=True, check=True)
         
-        # --- ANALISIS MATA AI (COMPUTER VISION) ---
         send_telegram_msg("🧠 Mata AI sedang memindai tata letak layar...")
         mode, data = analyze_video("input.mp4")
         
         if mode == "irl":
             face_x = data
-            send_telegram_msg("👤 Mode Terdeteksi: IRL Stream / Wajah Besar (Smart Tracking Center)")
-            # Rumus FFmpeg untuk memastikan wajah selalu di tengah potongan 9:16
+            send_telegram_msg("👤 Mode Terdeteksi: IRL Stream / Podcast (Smart Tracking Center)")
             x_expr = f"max(0, min(iw-ow, iw*{face_x} - ow/2))"
             ffmpeg_cmd = f'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih:{x_expr}:0" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
         else:
             c_x, c_y, c_w, c_h = data
             send_telegram_msg("🎮 Mode Terdeteksi: Gameplay + Facecam (Auto Crop Layout)")
-            # FFmpeg otomatis memotong bagian gameplay dan menyesuaikan facecam tanpa merusak proporsi
             filter_complex = (
                 f"[0:v]crop=ih*0.9:ih:(iw-ow)/2:0,scale=1080:1200[top]; "
                 f"[0:v]crop=iw*{c_w}:ih*{c_h}:iw*{c_x}:ih*{c_y},scale=1080:720:force_original_aspect_ratio=increase,crop=1080:720[bottom]; "
