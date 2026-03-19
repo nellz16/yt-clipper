@@ -18,44 +18,39 @@ ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID", 0))
 KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME")
 
 bot = telebot.TeleBot(TOKEN)
-
-# State Management untuk menyimpan data sementara user saat menekan tombol
 user_states = {}
 
-# --- KODE PEKERJA CLOUD (WHITE-LABELED & DYNAMIC PROGRESS) ---
+# Fungsi format waktu (Mengubah detik ke HH:MM:SS)
+def fmt_t(seconds):
+    h, r = divmod(int(seconds), 3600)
+    m, s = divmod(r, 60)
+    return f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
+
+# --- KODE PEKERJA CLOUD KAGGLE (SEKARANG JAUH LEBIH RINGAN & CEPAT) ---
 KAGGLE_WORKER_CODE = """
 import os
 import subprocess
 import requests
 import traceback
-import json
 import importlib
 import numpy as np
 
 def edit_msg(text, pct):
     bar = "█" * (pct // 10) + "░" * (10 - (pct // 10))
     full_text = f"[{bar}] {pct}% - {text}"
-    url_api = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
-    requests.post(url_api, data={"chat_id": CHAT_ID, "message_id": MSG_ID, "text": full_text})
+    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText", 
+                  data={"chat_id": CHAT_ID, "message_id": MSG_ID, "text": full_text})
 
 def send_final_video(caption, filepath):
-    url_api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo"
     with open(filepath, 'rb') as f:
-        requests.post(url_api, data={"chat_id": CHAT_ID, "caption": caption}, files={"video": f})
-
-def fmt_t(seconds):
-    h, r = divmod(seconds, 3600)
-    m, s = divmod(r, 60)
-    if h > 0: return f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
-    return f"{int(m):02d}:{int(s):02d}"
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo", 
+                      data={"chat_id": CHAT_ID, "caption": caption}, files={"video": f})
 
 def analyze_video(video_path, requested_pos):
     import cv2
     importlib.invalidate_caches()
-    
     cap = cv2.VideoCapture(video_path)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    step = max(1, total_frames // 15)
+    step = max(1, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) // 15)
     face_boxes = []
 
     try:
@@ -72,9 +67,7 @@ def analyze_video(video_path, requested_pos):
                         bbox = detection.location_data.relative_bounding_box
                         x, y, w, h = bbox.xmin, bbox.ymin, bbox.width, bbox.height
                         if 0.01 < w * h < 0.8: face_boxes.append((x, y, w, h))
-    except:
-        pass # Silently fail dan biarkan array kosong jika AI bermasalah
-
+    except: pass
     cap.release()
 
     if not face_boxes:
@@ -110,9 +103,7 @@ def analyze_video(video_path, requested_pos):
         else: center.append((x, y, w, h))
 
     if corner: return calc_crop(corner)
-    elif center:
-        avg = np.mean(center, axis=0)
-        return "irl", avg[0] + avg[2]/2
+    elif center: return "irl", np.mean(center, axis=0)[0] + np.mean(center, axis=0)[2]/2
     else: return "irl", 0.5
 
 def run_worker():
@@ -123,42 +114,11 @@ def run_worker():
         else:
             subprocess.run("pip install -q --upgrade yt-dlp", shell=True, check=True)
             
-        if MANUAL_TIME != "none":
-            edit_msg(f"Menggunakan durasi manual: {MANUAL_TIME}...", 20)
-            download_section = f'--download-sections "*{MANUAL_TIME}"'
-            time_info = f"Manual ({MANUAL_TIME})"
-        else:
-            edit_msg("Menganalisis grafik keramaian penonton...", 20)
-            try:
-                info_json = subprocess.check_output(f'yt-dlp --dump-json {URL}', shell=True, text=True)
-                info = json.loads(info_json)
-                heatmap = info.get('heatmap')
-                if heatmap:
-                    heatmap_sorted = sorted(heatmap, key=lambda x: x.get('value', 0), reverse=True)
-                    top_peaks = []
-                    for p in heatmap_sorted:
-                        p_time = int(p.get('start_time', 0))
-                        if all(abs(p_time - existing) > 60 for existing in top_peaks): top_peaks.append(p_time)
-                        if len(top_peaks) >= 3: break
-                    if top_peaks:
-                        peak = top_peaks[0]
-                        s_time, e_time = max(0, peak - 30), max(0, peak - 30) + 60
-                        time_info = f"Puncak Keramaian ({fmt_t(s_time)} - {fmt_t(e_time)})"
-                        download_section = f'--download-sections "*{s_time}-{e_time}"'
-                    else: 
-                        time_info = "Default (1 Menit Pertama)"
-                        download_section = '--download-sections "*0-60"'
-                else: 
-                    time_info = "Default (Tanpa Grafik)"
-                    download_section = '--download-sections "*0-60"'
-            except Exception: 
-                time_info = "Default (Error Analisis)"
-                download_section = '--download-sections "*0-60"'
-        
-        edit_msg(f"Mengunduh cuplikan video murni [{time_info}]...", 40)
+        edit_msg(f"Mengunduh cuplikan video murni [{MANUAL_TIME}]...", 30)
+        # Kaggle kini langsung menerima format waktu final (HH:MM:SS) dari Telegram
+        download_section = f'--download-sections "*{MANUAL_TIME}"'
         subprocess.run(f'yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" {download_section} -o "input.mp4" {URL}', shell=True, check=True)
         
-        # PENENTUAN MODE
         if FACE_POS == "pad":
             mode, data = "pad", None
         elif FACE_POS in ['auto', 'br', 'bl', 'tr', 'tl']:
@@ -167,11 +127,9 @@ def run_worker():
         else:
             mode, data = "irl", "bypass"
 
-        edit_msg("Menyusun ulang rasio dan merender video (Tahap Akhir)...", 80)
+        edit_msg("Menyusun ulang rasio dan merender video...", 80)
         
-        # PROSES RENDER 
         if mode == "pad":
-            # 16:9 -> 9:16 dengan Black Bars Atas & Bawah
             cmd = 'ffmpeg -i input.mp4 -vf "scale=1080:-2,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
         elif mode == "split_giant":
             c_x, c_y, c_w, c_h = data
@@ -192,18 +150,17 @@ def run_worker():
             cmd = f'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih:iw*{fx}-ow/2:0" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
             
         subprocess.run(cmd, shell=True, check=True)
-        
         edit_msg("Selesai! Mengunggah hasil ke Telegram...", 100)
-        send_final_video("✅ Berhasil diproses oleh Sistem Awam!", "output.mp4")
+        send_final_video("✅ Berhasil diproses oleh Mesin Cloud!", "output.mp4")
         
     except Exception as e:
         error_trace = traceback.format_exc()
-        edit_msg(f"❌ Terjadi Kesalahan Sistem:\\n{str(e)}", 0)
+        edit_msg(f"❌ Terjadi Kesalahan:\\n{str(e)}", 0)
 
 run_worker()
 """
 
-# --- 3. ALUR BOT TELEGRAM ---
+# --- 3. ALUR BOT TELEGRAM (UI/UX INTERAKTIF) ---
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -225,37 +182,88 @@ def handle_url(message):
         InlineKeyboardButton("🎯 Facecam Kanan", callback_data="mode_br"),
         InlineKeyboardButton("🎯 Facecam Kiri", callback_data="mode_bl")
     )
-    bot.reply_to(message, "Pilih Mode Layar / Potongan:", reply_markup=markup)
+    bot.reply_to(message, "⚙️ *Langkah 1: Pilih Tata Letak Layar*", reply_markup=markup, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('mode_'))
 def handle_mode_selection(call):
     chat_id = call.message.chat.id
     if chat_id not in user_states: return
 
-    mode = call.data.replace('mode_', '')
-    user_states[chat_id]['mode'] = mode
-
+    user_states[chat_id]['mode'] = call.data.replace('mode_', '')
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🔥 Auto Heatmap (Viral)", callback_data="time_auto"))
+    markup.add(InlineKeyboardButton("🔥 Cari 5 Momen Paling Viral (Heatmap)", callback_data="scan_heatmap"))
     
     bot.edit_message_text(
-        "Langkah 2:\nKlik 'Auto Heatmap' untuk mencari momen terbaik otomatis, *ATAU* ketik durasi manual di chat (contoh: `05:00-06:00`).",
-        chat_id=chat_id,
-        message_id=call.message.message_id,
-        reply_markup=markup,
-        parse_mode="Markdown"
+        "⏱️ *Langkah 2: Pilih Durasi Waktu*\n\n"
+        "Klik tombol di bawah untuk mencari momen terbaik dari grafik YouTube, *ATAU* ketik langsung durasi manual di chat ini (Contoh: `01:10:00-01:11:00`).",
+        chat_id=chat_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="Markdown"
     )
 
-# Eksekutor Utama (Pemicu Cloud Engine)
+@bot.callback_query_handler(func=lambda call: call.data == 'scan_heatmap')
+def scan_heatmap(call):
+    chat_id = call.message.chat.id
+    if chat_id not in user_states: return
+    
+    url = user_states[chat_id]['url']
+    bot.edit_message_text("⏳ *Memindai data grafik YouTube...* (Tunggu sekitar 3-5 detik)", 
+                          chat_id=chat_id, message_id=call.message.message_id, parse_mode="Markdown")
+    
+    # EKSTRAKSI HEATMAP DILAKUKAN LOKAL DI KOYEB
+    try:
+        info_json = subprocess.check_output(f'yt-dlp --dump-json {url}', shell=True, text=True)
+        info = json.loads(info_json)
+        heatmap = info.get('heatmap')
+        
+        if heatmap:
+            heatmap_sorted = sorted(heatmap, key=lambda x: x.get('value', 0), reverse=True)
+            top_peaks = []
+            for p in heatmap_sorted:
+                p_time = int(p.get('start_time', 0))
+                if all(abs(p_time - existing) > 60 for existing in top_peaks): top_peaks.append(p_time)
+                if len(top_peaks) >= 5: break
+            
+            if top_peaks:
+                markup = InlineKeyboardMarkup(row_width=1)
+                medals = ["🥇 Juara 1", "🥈 Juara 2", "🥉 Juara 3", "🏅 Posisi 4", "🏅 Posisi 5"]
+                
+                for i, peak in enumerate(top_peaks):
+                    s_time, e_time = max(0, peak - 30), max(0, peak - 30) + 60
+                    # Format ke HH:MM:SS
+                    time_label = f"{fmt_t(s_time)} - {fmt_t(e_time)}"
+                    # Callback data menyimpan detiknya
+                    markup.add(InlineKeyboardButton(f"{medals[i]} | {time_label}", callback_data=f"peak_{s_time}_{e_time}"))
+                
+                bot.edit_message_text("🔥 *Pilih Momen Viral Berikut:*", chat_id=chat_id, 
+                                      message_id=call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+                return
+    except Exception: pass
+    
+    # Jika gagal / tidak ada heatmap
+    bot.edit_message_text("⚠️ *Video ini tidak memiliki Heatmap.*\nSilakan balas pesan ini dengan mengetik durasi manual (Contoh: `00:05:00-00:06:00`).", 
+                          chat_id=chat_id, message_id=call.message.message_id, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('peak_'))
+def handle_peak_selection(call):
+    chat_id = call.message.chat.id
+    data = call.data.split('_') # format: peak_120_180
+    s_time, e_time = int(data[1]), int(data[2])
+    
+    # Konversi detik murni menjadi format string yang Anda minta: HH:MM:SS-HH:MM:SS
+    manual_time_str = f"{fmt_t(s_time)}-{fmt_t(e_time)}"
+    
+    bot.delete_message(chat_id, call.message.message_id)
+    trigger_cloud_engine(chat_id, manual_time_str)
+
+@bot.message_handler(func=lambda message: "-" in message.text and message.chat.id in user_states and 'mode' in user_states[message.chat.id])
+def handle_manual_time(message):
+    manual_time = message.text.strip()
+    trigger_cloud_engine(message.chat.id, manual_time)
+
 def trigger_cloud_engine(chat_id, manual_time):
     if chat_id not in user_states: return
     
-    state = user_states[chat_id]
-    url = state['url']
-    face_pos = state['mode']
-    
-    # Buat pesan progres awal dan simpan ID pesannya
-    msg = bot.send_message(chat_id, "[░░░░░░░░░░] 0% - Menghubungi Cloud Engine...")
+    url, face_pos = user_states[chat_id]['url'], user_states[chat_id]['mode']
+    msg = bot.send_message(chat_id, "[░░░░░░░░░░] 0% - Mengirim tugas ke Mesin Cloud...")
     
     os.makedirs("kaggle_task", exist_ok=True)
     worker_vars = f'URL = "{url}"\nCHAT_ID = "{chat_id}"\nMSG_ID = "{msg.message_id}"\nBOT_TOKEN = "{TOKEN}"\nMANUAL_TIME = "{manual_time}"\nFACE_POS = "{face_pos}"\n'
@@ -275,20 +283,9 @@ def trigger_cloud_engine(chat_id, manual_time):
     except Exception:
         bot.edit_message_text("❌ Gagal terhubung ke Cloud Engine.", chat_id=chat_id, message_id=msg.message_id)
 
-    # Bersihkan state setelah diproses
     del user_states[chat_id]
 
-@bot.callback_query_handler(func=lambda call: call.data == 'time_auto')
-def handle_auto_time(call):
-    bot.delete_message(call.message.chat.id, call.message.message_id)
-    trigger_cloud_engine(call.message.chat.id, "none")
-
-@bot.message_handler(func=lambda message: "-" in message.text and message.chat.id in user_states and 'mode' in user_states[message.chat.id])
-def handle_manual_time(message):
-    manual_time = message.text.strip()
-    trigger_cloud_engine(message.chat.id, manual_time)
-
-# --- 4. WEB SERVER (SILENT) ---
+# --- 4. WEB SERVER (MODE HENING) ---
 app = Flask(__name__)
 @app.route('/')
 def home(): return "Sistem Aktif"
