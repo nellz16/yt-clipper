@@ -12,8 +12,7 @@ KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME")
 
 bot = telebot.TeleBot(TOKEN)
 
-# --- 2. KODE PEKERJA KAGGLE (MURNI PYTHON, TANPA FORMATTING) ---
-# Kode ini akan digabung dengan variabel dari Koyeb nanti
+# --- 2. KODE PEKERJA KAGGLE ---
 KAGGLE_WORKER_CODE = """
 import os
 import subprocess
@@ -23,55 +22,86 @@ import json
 
 def send_telegram_msg(text):
     url_api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url_api, data={"chat_id": CHAT_ID, "text": text})
+    requests.post(url_api, data={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"})
 
 def run_worker():
     try:
         send_telegram_msg("⚙️ Mesin Kaggle menyala! Memulai instalasi yt-dlp...")
         subprocess.run("pip install -q yt-dlp", shell=True, check=True)
         
-        # --- FITUR 1: MENCARI HEATMAP ---
-        send_telegram_msg("🔍 Memindai Heatmap untuk mencari momen paling viral...")
-        info_cmd = f'yt-dlp --dump-json {URL}'
-        try:
-            info_json = subprocess.check_output(info_cmd, shell=True, text=True)
-            info = json.loads(info_json)
-            heatmap = info.get('heatmap')
+        download_section = ""
+        
+        # --- CEK APAKAH MODE MANUAL ---
+        if MANUAL_TIME != "none":
+            send_telegram_msg(f"⏳ *Mode Manual Aktif!* Memotong pada durasi: `{MANUAL_TIME}`")
+            download_section = f'--download-sections "*{MANUAL_TIME}"'
             
-            if heatmap:
-                # Cari titik value tertinggi
-                peak = max(heatmap, key=lambda x: x.get('value', 0))
-                peak_time = int(peak.get('start_time', 0))
-                send_telegram_msg(f"🔥 Puncak keramaian ditemukan di detik ke-{peak_time}! Memotong area ini...")
-                start_time = max(0, peak_time - 15) # Mulai 15 detik sebelum puncak
-                end_time = start_time + 60          # Ambil total 60 detik
-                download_section = f'--download-sections "*{start_time}-{end_time}"'
-            else:
-                send_telegram_msg("⚠️ Video ini tidak memiliki Heatmap. Memotong 1 menit pertama...")
+        else:
+            # --- MODE OTOMATIS (HEATMAP) ---
+            send_telegram_msg("🔍 Memindai Heatmap untuk mencari momen paling viral...")
+            try:
+                info_cmd = f'yt-dlp --dump-json {URL}'
+                info_json = subprocess.check_output(info_cmd, shell=True, text=True)
+                info = json.loads(info_json)
+                heatmap = info.get('heatmap')
+                
+                if heatmap:
+                    # Urutkan heatmap dari skor tertinggi ke terendah
+                    sorted_heatmap = sorted(heatmap, key=lambda x: x.get('value', 0), reverse=True)
+                    
+                    # Ambil Top 3 Momen yang berjauhan (Minimal jarak 60 detik antar momen)
+                    top_peaks = []
+                    for p in sorted_heatmap:
+                        if not top_peaks:
+                            top_peaks.append(p)
+                        else:
+                            # Cek apakah momen ini cukup jauh dari momen yang sudah masuk Top list
+                            if all(abs(p.get('start_time', 0) - tp.get('start_time', 0)) > 60 for tp in top_peaks):
+                                top_peaks.append(p)
+                        if len(top_peaks) == 3: break
+                    
+                    # Kirim laporan Top 3 ke Telegram
+                    msg_peaks = "🔥 *Top Momen Viral (Heatmap):*\\n"
+                    for i, p in enumerate(top_peaks):
+                        pt = int(p.get('start_time', 0))
+                        mins, secs = divmod(pt, 60)
+                        msg_peaks += f"{i+1}. Menit {mins:02d}:{secs:02d} (Skor: {p.get('value', 0):.2f})\\n"
+                    send_telegram_msg(msg_peaks)
+                    
+                    # Pilih Juara 1 untuk dipotong
+                    best_peak = top_peaks[0]
+                    peak_time = int(best_peak.get('start_time', 0))
+                    
+                    # RUMUS PUNCAK DI TENGAH: Mundur 30 detik sebelum puncak, potong total 60 detik
+                    start_time = max(0, peak_time - 30)
+                    end_time = start_time + 60
+                    
+                    start_mins, start_secs = divmod(start_time, 60)
+                    end_mins, end_secs = divmod(end_time, 60)
+                    
+                    send_telegram_msg(f"✂️ *Mengambil Juara 1:* Memotong dari `{start_mins:02d}:{start_secs:02d}` hingga `{end_mins:02d}:{end_secs:02d}` agar puncak serunya ada di tengah-tengah video!")
+                    download_section = f'--download-sections "*{start_time}-{end_time}"'
+                    
+                else:
+                    send_telegram_msg("⚠️ Video ini tidak memiliki Heatmap (Mungkin video baru). Memotong 1 menit pertama...")
+                    download_section = '--download-sections "*0-60"'
+            except Exception as e:
+                send_telegram_msg("⚠️ Gagal membaca Heatmap. Memotong 1 menit pertama...")
                 download_section = '--download-sections "*0-60"'
-        except Exception as e:
-            send_telegram_msg("⚠️ Gagal membaca Heatmap. Memotong 1 menit pertama...")
-            download_section = '--download-sections "*0-60"'
         
         # --- UNDUH VIDEO ---
-        send_telegram_msg("⬇️ Sedang mengunduh momen terbaik...")
+        send_telegram_msg("⬇️ Sedang mengunduh momen tersebut...")
         download_cmd = f'yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" {download_section} -o "input.mp4" {URL}'
         subprocess.run(download_cmd, shell=True, check=True)
         
-        # --- FITUR 2: SPLIT SCREEN & FACECAM ---
+        # --- FITUR SPLIT SCREEN & FACECAM ---
         if FACE_POS in ['br', 'bl', 'tr', 'tl']:
-            send_telegram_msg(f"✂️ Memotong Split Screen (Gameplay di atas, Wajah di posisi: {FACE_POS})...")
+            send_telegram_msg(f"✂️ Merender Split Screen (Wajah di: {FACE_POS.upper()})...")
+            if FACE_POS == "br": face_pos_str = "iw-ow:ih-oh"
+            elif FACE_POS == "bl": face_pos_str = "0:ih-oh"
+            elif FACE_POS == "tr": face_pos_str = "iw-ow:0"
+            elif FACE_POS == "tl": face_pos_str = "0:0"
             
-            # Tentukan letak potong wajah berdasarkan input Telegram
-            if FACE_POS == "br": face_pos_str = "iw-ow:ih-oh"  # Kanan Bawah
-            elif FACE_POS == "bl": face_pos_str = "0:ih-oh"      # Kiri Bawah
-            elif FACE_POS == "tr": face_pos_str = "iw-ow:0"      # Kanan Atas
-            elif FACE_POS == "tl": face_pos_str = "0:0"          # Kiri Atas
-            
-            # Rumus FFmpeg: 
-            # Top = Crop tengah 90% tinggi, lalu paksa jadi ukuran 1080x1200
-            # Bottom = Crop area wajah 50%x33%, lalu paksa jadi ukuran 1080x720
-            # Gabung (vstack) = 1080x1920 (Vertikal 9:16)
             filter_complex = (
                 f"[0:v]crop=ih*0.9:ih:(iw-ow)/2:0,scale=1080:1200[top]; "
                 f"[0:v]crop=ih*0.5:ih*0.333:{face_pos_str},scale=1080:720[bottom]; "
@@ -79,16 +109,16 @@ def run_worker():
             )
             ffmpeg_cmd = f'ffmpeg -i input.mp4 -filter_complex "{filter_complex}" -map "[outv]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
         else:
-            send_telegram_msg("✂️ Memotong vertikal standar (Tengah Layar)...")
+            send_telegram_msg("✂️ Merender rasio vertikal standar...")
             ffmpeg_cmd = 'ffmpeg -i input.mp4 -vf "crop=ih*(9/16):ih" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
             
         subprocess.run(ffmpeg_cmd, shell=True, check=True)
         
         # --- KIRIM HASIL ---
-        send_telegram_msg("🚀 Selesai! Mengirim video Shorts ke Anda...")
+        send_telegram_msg("🚀 Selesai! Mengirim video ke Anda...")
         with open('output.mp4', 'rb') as video_file:
             url_api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo"
-            requests.post(url_api, data={"chat_id": CHAT_ID, "caption": "✅ Auto-Heatmap & Facecam selesai!"}, files={"video": video_file})
+            requests.post(url_api, data={"chat_id": CHAT_ID, "caption": "✅ Video siap diupload ke TikTok/Shorts!"}, files={"video": video_file})
             
     except Exception as e:
         error_trace = traceback.format_exc()
@@ -102,15 +132,16 @@ run_worker()
 def send_welcome(message):
     if message.chat.id != ALLOWED_USER_ID: return bot.reply_to(message, "⛔ Akses Ditolak.")
     pesan_bantuan = (
-        "🤖 *Bot YouTube Clipper Pro*\n\n"
-        "Kirim link YouTube untuk memotong bagian paling viral otomatis!\n\n"
-        "🎮 *Cara pakai Facecam (Opsional):*\n"
-        "Tambahkan kode posisi di belakang link.\n"
-        "`br` = Kanan Bawah\n"
-        "`bl` = Kiri Bawah\n"
-        "`tr` = Kanan Atas\n"
-        "`tl` = Kiri Atas\n\n"
-        "*Contoh Chat:* `https://youtu.be/xyz br`"
+        "🤖 *Bot YouTube Clipper v3.0*\n\n"
+        "Kirim link YouTube untuk memotong momen viral otomatis.\n\n"
+        "🔧 *Cara Penggunaan Khusus:*\n"
+        "Anda bisa menambahkan posisi facecam (`br`, `bl`, `tr`, `tl`) dan durasi manual.\n\n"
+        "*1. Otomatis (Cari Heatmap + Facecam):*\n"
+        "`https://youtu.be/xyz br`\n\n"
+        "*2. Mode Manual (Video Tanpa Heatmap):*\n"
+        "`https://youtu.be/xyz 05:10-06:05`\n\n"
+        "*3. Mode Komplit (Manual + Facecam):*\n"
+        "`https://youtu.be/xyz 05:10-06:05 br`"
     )
     bot.reply_to(message, pesan_bantuan, parse_mode="Markdown")
 
@@ -118,28 +149,38 @@ def send_welcome(message):
 def handle_youtube_link(message):
     if message.chat.id != ALLOWED_USER_ID: return
     
-    # Memecah teks pesan (Misal: "https://youtu.be/xyz br")
+    # Pecah input bot
     args = message.text.strip().split()
     url = args[0]
     
-    # Deteksi parameter posisi facecam jika ada
     face_pos = "none"
+    manual_time = "none"
+    
+    # Deteksi parameter (Durasi manual dan Posisi Facecam)
     if len(args) > 1:
-        face_pos = args[1].lower()
+        for arg in args[1:]:
+            # Jika mengandung strip (-) dan angka/titik dua (:), berarti itu durasi manual
+            if "-" in arg and (":" in arg or arg.replace("-", "").isdigit()):
+                manual_time = arg
+            # Selain itu, anggap sebagai posisi facecam
+            elif arg.lower() in ['br', 'bl', 'tr', 'tl']:
+                face_pos = arg.lower()
 
     if "youtube.com" not in url and "youtu.be" not in url:
         return bot.reply_to(message, "⚠️ Mohon kirimkan link YouTube yang valid.")
 
-    bot.reply_to(message, f"⏳ Link diterima! (Posisi Wajah: {face_pos.upper()})\nMengirim tugas ke Kaggle...")
+    status_msg = f"⏳ Link diterima!\n- Facecam: `{face_pos.upper()}`\n- Durasi: `{manual_time}`\n\nMengirim tugas ke GPU..."
+    bot.reply_to(message, status_msg, parse_mode="Markdown")
 
     os.makedirs("kaggle_task", exist_ok=True)
 
-    # Injeksi variabel ke dalam script Kaggle dengan cara yang aman
+    # Injeksi variabel ke script Kaggle
     worker_vars = f"""
 URL = "{url}"
 CHAT_ID = "{message.chat.id}"
 BOT_TOKEN = "{TOKEN}"
 FACE_POS = "{face_pos}"
+MANUAL_TIME = "{manual_time}"
 """
     script_content = worker_vars + KAGGLE_WORKER_CODE
     
