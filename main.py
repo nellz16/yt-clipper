@@ -24,8 +24,7 @@ def fmt_t(seconds):
     m, s = divmod(r, 60)
     return f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
 
-# --- KODE PEKERJA CLOUD (KAGGLE) ---
-# MENGGUNAKAN RAW STRING (r"") AGAR \n TIDAK DIEKSEKUSI OLEH KOYEB
+# --- KODE PEKERJA CLOUD (KAGGLE - 1 TASK SYSTEM) ---
 KAGGLE_WORKER_CODE = r"""
 import os
 import subprocess
@@ -106,11 +105,20 @@ def analyze_video(video_path, requested_pos):
     else: return "irl", 0.5
 
 def main_process():
-    if TASK_TYPE == "analyze":
-        edit_msg("Menyiapkan Sistem Analis...", 20)
+    edit_msg("Menyiapkan Mesin Cloud & AI...", 10)
+    if FACE_POS in ['auto', 'br', 'bl', 'tr', 'tl']:
+        subprocess.run("pip install -q --upgrade yt-dlp opencv-python-headless mediapipe numpy", shell=True, check=True)
+    else:
         subprocess.run("pip install -q --upgrade yt-dlp", shell=True, check=True)
-        edit_msg("Mengekstrak Grafik Keramaian...", 50)
-        
+
+    # ALUR 1: MANUAL TIME
+    if MANUAL_TIME != "none":
+        edit_msg(f"Mengunduh cuplikan manual [{MANUAL_TIME}]...", 30)
+        subprocess.run(f'yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" --download-sections "*{MANUAL_TIME}" -o "input.mp4" {URL}', shell=True, check=True)
+
+    # ALUR 2: AUTO HEATMAP (CARI JUARA 1 + REFERENSI JUARA LAIN)
+    else:
+        edit_msg("Memindai Grafik YouTube (Mencari Top 5)...", 20)
         try:
             info_json = subprocess.check_output(f'yt-dlp --dump-json {URL}', shell=True, text=True)
             info = json.loads(info_json)
@@ -124,72 +132,75 @@ def main_process():
                     if len(top_peaks) >= 5: break
                 
                 if top_peaks:
-                    medals = ["🥇 Juara 1", "🥈 Juara 2", "🥉 Juara 3", "🏅 Posisi 4", "🏅 Posisi 5"]
-                    buttons = []
-                    for i, peak in enumerate(top_peaks):
-                        s_t, e_t = max(0, peak - 30), max(0, peak - 30) + 60
-                        time_label = f"{fmt_t(s_t)} - {fmt_t(e_t)}"
-                        buttons.append([{"text": f"{medals[i]} | {time_label}", "callback_data": f"peak_{s_t}_{e_t}"}])
+                    peak1_s, peak1_e = max(0, top_peaks[0] - 30), max(0, top_peaks[0] - 30) + 60
+                    target_time = f"{fmt_t(peak1_s)}-{fmt_t(peak1_e)}"
                     
-                    reply_markup = json.dumps({"inline_keyboard": buttons})
-                    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText", 
-                        data={"chat_id": CHAT_ID, "message_id": MSG_ID, "text": "🔥 *Grafik Ditemukan! Pilih Momen Viral Berikut:*", "parse_mode": "Markdown", "reply_markup": reply_markup})
-                    return
-        except Exception: pass
-        
-        msg_text = "⚠️ *Video ini tidak memiliki Heatmap.*\nSilakan balas pesan ini dengan mengetik durasi manual (Contoh: `00:05:00-00:06:00`)."
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText", 
-            data={"chat_id": CHAT_ID, "message_id": MSG_ID, "text": msg_text, "parse_mode": "Markdown"})
-        return
+                    # Buat pesan referensi juara lainnya
+                    ref_text = f"🔥 *Mengambil Juara 1 otomatis:* `{target_time}`\n\n*Referensi Momen Lainnya:*\n_(Klik teks angka untuk copy manual)_\n"
+                    medals = ["🥇", "🥈", "🥉", "🏅", "🏅"]
+                    for i, peak in enumerate(top_peaks):
+                        if i == 0: continue
+                        s_t, e_t = max(0, peak - 30), max(0, peak - 30) + 60
+                        ref_text += f"{medals[i]} Juara {i+1}: `{fmt_t(s_t)}-{fmt_t(e_t)}`\n"
+                    
+                    # Kirim pesan referensi sebagai pesan baru
+                    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", 
+                        data={"chat_id": CHAT_ID, "text": ref_text, "parse_mode": "Markdown"})
+                    
+                    edit_msg(f"Mengunduh cuplikan Juara 1...", 40)
+                    dl_cmd = f'yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" --download-sections "*{peak1_s}-{peak1_e}" -o "input.mp4" {URL}'
+                    subprocess.run(dl_cmd, shell=True, check=True)
+                else:
+                    edit_msg("Heatmap tidak valid. Mengunduh 1 menit pertama...", 40)
+                    subprocess.run(f'yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" --download-sections "*0-60" -o "input.mp4" {URL}', shell=True, check=True)
+            else:
+                edit_msg("Video tanpa Heatmap. Mengunduh 1 menit pertama...", 40)
+                subprocess.run(f'yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" --download-sections "*0-60" -o "input.mp4" {URL}', shell=True, check=True)
+        except Exception:
+            edit_msg("Gagal baca Heatmap. Mengunduh 1 menit pertama...", 40)
+            subprocess.run(f'yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" --download-sections "*0-60" -o "input.mp4" {URL}', shell=True, check=True)
 
-    elif TASK_TYPE == "render":
-        edit_msg("Menyiapkan Mesin Render & AI...", 10)
-        if FACE_POS in ['auto', 'br', 'bl', 'tr', 'tl']:
-            subprocess.run("pip install -q --upgrade yt-dlp opencv-python-headless mediapipe numpy", shell=True, check=True)
-        else:
-            subprocess.run("pip install -q --upgrade yt-dlp", shell=True, check=True)
-            
-        edit_msg(f"Mengunduh cuplikan [{MANUAL_TIME}]...", 30)
-        subprocess.run(f'yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" --download-sections "*{MANUAL_TIME}" -o "input.mp4" {URL}', shell=True, check=True)
-        
-        if FACE_POS == "pad": mode, data = "pad", None
-        elif FACE_POS in ['auto', 'br', 'bl', 'tr', 'tl']:
-            edit_msg("AI memindai tata letak objek...", 60)
-            mode, data = analyze_video("input.mp4", FACE_POS)
-        else: mode, data = "irl", "bypass"
+    # ===============================
+    # TAHAP ANALISIS & RENDER VIDEO
+    # ===============================
+    if FACE_POS == "pad": mode, data = "pad", None
+    elif FACE_POS in ['auto', 'br', 'bl', 'tr', 'tl']:
+        edit_msg("AI memindai tata letak objek...", 60)
+        mode, data = analyze_video("input.mp4", FACE_POS)
+    else: mode, data = "irl", "bypass"
 
-        edit_msg("Merender mahakarya video...", 80)
-        if mode == "pad":
-            cmd = 'ffmpeg -i input.mp4 -vf "scale=1080:-2,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
-        elif mode == "split_giant":
-            c_x, c_y, c_w, c_h = data
-            fc = f"[0:v]crop=ih*(9/8):ih:(iw-ow)/2:0,scale=1080:960[top]; [0:v]crop=iw*{c_w}:ih*{c_h}:iw*{c_x}:ih*{c_y},scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[bottom]; [top][bottom]vstack[outv]"
-            cmd = f'ffmpeg -i input.mp4 -filter_complex "{fc}" -map "[outv]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
-        elif mode == "split_dynamic":
-            c_x, c_y, c_w, c_h = data
-            fc = f"[0:v]crop=ih*0.9:ih:(iw-ow)/2:0,scale=1080:1200[top]; [0:v]crop=iw*{c_w}:ih*{c_h}:iw*{c_x}:ih*{c_y},scale=1080:720:force_original_aspect_ratio=increase,crop=1080:720[bottom]; [top][bottom]vstack[outv]"
-            cmd = f'ffmpeg -i input.mp4 -filter_complex "{fc}" -map "[outv]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
-        elif mode == "split_static":
-            p = "iw-ow:ih-oh" if data=="br" else "0:ih-oh" if data=="bl" else "iw-ow:0" if data=="tr" else "0:0"
-            fc = f"[0:v]crop=ih*0.9:ih:(iw-ow)/2:0,scale=1080:1200[top]; [0:v]crop=ih*0.5:ih*0.333:{p},scale=1080:720[bottom]; [top][bottom]vstack[outv]"
-            cmd = f'ffmpeg -i input.mp4 -filter_complex "{fc}" -map "[outv]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
-        elif mode == "irl" and FACE_POS == "irl":
-            cmd = 'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
-        else:
-            fx = data if isinstance(data, (float, int)) else 0.5
-            cmd = f'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih:iw*{fx}-ow/2:0" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
-            
-        subprocess.run(cmd, shell=True, check=True)
-        edit_msg("Selesai! Mengunggah hasil ke Telegram...", 100)
-        with open("output.mp4", 'rb') as f:
-            requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo", data={"chat_id": CHAT_ID, "caption": "✅ Berhasil diproses oleh Mesin Cloud!"}, files={"video": f})
+    edit_msg("Merender mahakarya video...", 80)
+    if mode == "pad":
+        cmd = 'ffmpeg -i input.mp4 -vf "scale=1080:-2,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
+    elif mode == "split_giant":
+        c_x, c_y, c_w, c_h = data
+        fc = f"[0:v]crop=ih*(9/8):ih:(iw-ow)/2:0,scale=1080:960[top]; [0:v]crop=iw*{c_w}:ih*{c_h}:iw*{c_x}:ih*{c_y},scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[bottom]; [top][bottom]vstack[outv]"
+        cmd = f'ffmpeg -i input.mp4 -filter_complex "{fc}" -map "[outv]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
+    elif mode == "split_dynamic":
+        c_x, c_y, c_w, c_h = data
+        fc = f"[0:v]crop=ih*0.9:ih:(iw-ow)/2:0,scale=1080:1200[top]; [0:v]crop=iw*{c_w}:ih*{c_h}:iw*{c_x}:ih*{c_y},scale=1080:720:force_original_aspect_ratio=increase,crop=1080:720[bottom]; [top][bottom]vstack[outv]"
+        cmd = f'ffmpeg -i input.mp4 -filter_complex "{fc}" -map "[outv]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
+    elif mode == "split_static":
+        p = "iw-ow:ih-oh" if data=="br" else "0:ih-oh" if data=="bl" else "iw-ow:0" if data=="tr" else "0:0"
+        fc = f"[0:v]crop=ih*0.9:ih:(iw-ow)/2:0,scale=1080:1200[top]; [0:v]crop=ih*0.5:ih*0.333:{p},scale=1080:720[bottom]; [top][bottom]vstack[outv]"
+        cmd = f'ffmpeg -i input.mp4 -filter_complex "{fc}" -map "[outv]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
+    elif mode == "irl" and FACE_POS == "irl":
+        cmd = 'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
+    else:
+        fx = data if isinstance(data, (float, int)) else 0.5
+        cmd = f'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih:iw*{fx}-ow/2:0" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
+        
+    subprocess.run(cmd, shell=True, check=True)
+    edit_msg("Selesai! Mengunggah hasil ke Telegram...", 100)
+    with open("output.mp4", 'rb') as f:
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo", data={"chat_id": CHAT_ID, "caption": "✅ Berhasil diproses oleh Mesin Cloud!"}, files={"video": f})
 
 # GLOBAL FAILSAFE
 try:
     main_process()
 except Exception as e:
     error_trace = traceback.format_exc()
-    safe_error = error_trace[:800] # Membatasi panjang error agar API Telegram tidak menolak
+    safe_error = error_trace[:800]
     requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText", 
         data={"chat_id": CHAT_ID, "message_id": MSG_ID, "text": f"❌ Terjadi Kesalahan Sistem:\n\n{safe_error}"})
 """
@@ -224,54 +235,40 @@ def handle_mode_selection(call):
 
     user_states[chat_id]['mode'] = call.data.replace('mode_', '')
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🔥 Cari 5 Momen Paling Viral", callback_data="scan_heatmap"))
+    markup.add(InlineKeyboardButton("🚀 Proses Auto (Ambil Juara 1)", callback_data="run_auto"))
     
     bot.edit_message_text(
         "⏱️ *Langkah 2: Pilih Durasi Waktu*\n\n"
-        "Klik tombol di bawah untuk mencari momen terbaik dari grafik YouTube, *ATAU* ketik langsung durasi manual di chat ini (Contoh: `01:10:00-01:11:00`).",
+        "Klik tombol *Proses Auto* untuk otomatis memotong grafik keramaian tertinggi, *ATAU* ketik langsung durasi manual di chat ini (Contoh: `01:10:00-01:11:00`).",
         chat_id=chat_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="Markdown"
     )
 
-@bot.callback_query_handler(func=lambda call: call.data == 'scan_heatmap')
-def trigger_analyzer(call):
-    chat_id = call.message.chat.id
-    if chat_id not in user_states: return
-    
-    msg = bot.edit_message_text("[░░░░░░░░░░] 0% - Mengirim tugas Analisis ke Mesin Cloud...", 
-                          chat_id=chat_id, message_id=call.message.message_id)
-    dispatch_kaggle_task(chat_id, msg.message_id, task_type="analyze", manual_time="none")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('peak_'))
-def handle_peak_selection(call):
+@bot.callback_query_handler(func=lambda call: call.data == 'run_auto')
+def trigger_auto_run(call):
     chat_id = call.message.chat.id
     if chat_id not in user_states: 
         bot.answer_callback_query(call.id, "⚠️ Sesi kadaluarsa. Kirim ulang link.", show_alert=True)
         return
         
-    data = call.data.split('_')
-    s_time, e_time = int(data[1]), int(data[2])
-    manual_time_str = f"{fmt_t(s_time)}-{fmt_t(e_time)}"
-    
-    msg = bot.edit_message_text("[░░░░░░░░░░] 0% - Mengirim tugas Render ke Mesin Cloud...", 
+    msg = bot.edit_message_text("[░░░░░░░░░░] 0% - Mengirim tugas ke Mesin Cloud...", 
                           chat_id=chat_id, message_id=call.message.message_id)
-    dispatch_kaggle_task(chat_id, msg.message_id, task_type="render", manual_time=manual_time_str)
+    dispatch_kaggle_task(chat_id, msg.message_id, manual_time="none")
 
 @bot.message_handler(func=lambda message: "-" in message.text and message.chat.id in user_states and 'mode' in user_states[message.chat.id])
 def handle_manual_time(message):
     chat_id = message.chat.id
     manual_time = message.text.strip()
-    msg = bot.send_message(chat_id, "[░░░░░░░░░░] 0% - Mengirim tugas Render ke Mesin Cloud...")
-    dispatch_kaggle_task(chat_id, msg.message_id, task_type="render", manual_time=manual_time)
+    msg = bot.send_message(chat_id, "[░░░░░░░░░░] 0% - Mengirim tugas manual ke Mesin Cloud...")
+    dispatch_kaggle_task(chat_id, msg.message_id, manual_time=manual_time)
 
-def dispatch_kaggle_task(chat_id, msg_id, task_type, manual_time):
+def dispatch_kaggle_task(chat_id, msg_id, manual_time):
     state = user_states.get(chat_id, {})
     url = state.get('url', '')
     face_pos = state.get('mode', 'auto')
     
     os.makedirs("kaggle_task", exist_ok=True)
-    worker_vars = f'URL = "{url}"\nCHAT_ID = "{chat_id}"\nMSG_ID = "{msg_id}"\nBOT_TOKEN = "{TOKEN}"\nTASK_TYPE = "{task_type}"\nMANUAL_TIME = "{manual_time}"\nFACE_POS = "{face_pos}"\n'
+    worker_vars = f'URL = "{url}"\nCHAT_ID = "{chat_id}"\nMSG_ID = "{msg_id}"\nBOT_TOKEN = "{TOKEN}"\nMANUAL_TIME = "{manual_time}"\nFACE_POS = "{face_pos}"\n'
     
-    # Penggunaan Raw String memastikan tidak ada karakter yang diterjemahkan ulang
     with open("kaggle_task/script.py", "w") as f: f.write(worker_vars + KAGGLE_WORKER_CODE)
     
     slug_id = f"worker-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
@@ -284,8 +281,7 @@ def dispatch_kaggle_task(chat_id, msg_id, task_type, manual_time):
 
     try:
         subprocess.run(["kaggle", "kernels", "push", "-p", "kaggle_task"], check=True)
-        if task_type == "render":
-            del user_states[chat_id] 
+        del user_states[chat_id] 
     except Exception:
         bot.edit_message_text("❌ Gagal terhubung ke Cloud Engine.", chat_id=chat_id, message_id=msg_id)
 
