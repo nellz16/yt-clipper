@@ -2,20 +2,20 @@ import os
 import json
 import subprocess
 import telebot
+from flask import Flask
+from threading import Thread
 
-# --- 1. MENGAMBIL DATA RAHASIA DARI ENVIRONMENT (KEAMANAN) ---
+# --- 1. AMBIL VARIABEL ---
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID", 0))
 KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME")
 
-# Inisialisasi Bot
 bot = telebot.TeleBot(TOKEN)
 
-# --- 2. TEMPLATE KODE PEKERJA KAGGLE ---
-# Kode inilah yang akan dikirim ke GPU Kaggle untuk dieksekusi
+# --- 2. KODE PEKERJA KAGGLE ---
+# (Ini adalah template yang akan dikirim ke mesin Kaggle)
 KAGGLE_WORKER_CODE = """
 import os
-import subprocess
 import requests
 
 URL = "{url}"
@@ -23,27 +23,21 @@ CHAT_ID = "{chat_id}"
 BOT_TOKEN = "{bot_token}"
 
 def run_worker():
-    print("Mulai memproses video...")
-    # 1. Install library yang dibutuhkan di mesin Kaggle
+    print("Memulai Pekerja di Kaggle...")
     os.system("pip install -q yt-dlp")
     
-    # 2. Download Video Kualitas Terbaik (Format MP4)
-    # Catatan: Di sini kita batasi download bagian awal saja agar cepat saat testing
-    # Untuk versi full, hapus argumen --download-sections
+    print("Mengunduh video...")
     download_cmd = f'yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" --download-sections "*00:00:00-00:01:00" -o "input.mp4" {{URL}}'
     os.system(download_cmd)
     
-    # 3. Proses Editing dengan FFmpeg (Crop Vertikal 9:16 untuk Shorts/TikTok)
-    # Kaggle sudah memiliki FFmpeg bawaan yang sangat cepat
+    print("Memotong ke vertikal 9:16...")
     ffmpeg_cmd = 'ffmpeg -i input.mp4 -vf "crop=ih*(9/16):ih" -c:a copy -y output.mp4'
     os.system(ffmpeg_cmd)
     
-    # 4. Kirim Hasil Kembali ke Telegram via API
-    print("Mengirim video ke Telegram...")
+    print("Mengirim kembali ke Telegram...")
     with open('output.mp4', 'rb') as video_file:
         url_api = f"https://api.telegram.org/bot{{BOT_TOKEN}}/sendVideo"
-        data = {{"chat_id": CHAT_ID, "caption": "✅ Video Shorts Anda selesai diproses oleh GPU Kaggle!"}}
-        requests.post(url_api, data=data, files={{"video": video_file}})
+        requests.post(url_api, data={{"chat_id": CHAT_ID, "caption": "✅ Video diproses dengan Kaggle!"}}, files={{"video": video_file}})
         
 run_worker()
 """
@@ -52,30 +46,27 @@ run_worker()
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     if message.chat.id != ALLOWED_USER_ID:
-        return bot.reply_to(message, "⛔ Akses Ditolak. Anda tidak diizinkan menggunakan bot ini.")
-    bot.reply_to(message, "🤖 Bot YouTube Clipper Ready!\nKirimkan link YouTube untuk mulai memotong video.")
+        return bot.reply_to(message, "⛔ Akses Ditolak.")
+    bot.reply_to(message, "🤖 Bot YT Clipper Ready!")
 
 @bot.message_handler(func=lambda message: True)
 def handle_youtube_link(message):
-    # Keamanan: Cek apakah yang chat adalah pemilik bot
-    if message.chat.id != ALLOWED_USER_ID:
-        return
-
+    if message.chat.id != ALLOWED_USER_ID: return
+    
     url = message.text
     if "youtube.com" not in url and "youtu.be" not in url:
         return bot.reply_to(message, "⚠️ Mohon kirimkan link YouTube yang valid.")
 
-    bot.reply_to(message, "⏳ Link diterima! Sedang membangunkan server GPU Kaggle. Harap tunggu sekitar 2-5 menit...")
+    bot.reply_to(message, "⏳ Link diterima! Mengontak Server...")
 
-    # Buat direktori sementara untuk menyiapkan file Kaggle
     os.makedirs("kaggle_task", exist_ok=True)
 
-    # Siapkan script Python dengan menyisipkan URL dan Token
+    # Injeksi URL ke template
     script_content = KAGGLE_WORKER_CODE.format(url=url, chat_id=message.chat.id, bot_token=TOKEN)
     with open("kaggle_task/script.py", "w") as f:
         f.write(script_content)
 
-    # Siapkan Metadata agar Kaggle tahu ini tugas apa (Enable GPU = true)
+    # Metadata untuk Kaggle
     metadata = {
       "id": f"{KAGGLE_USERNAME}/yt-clipper-task",
       "title": "YT Clipper Auto Task",
@@ -89,31 +80,27 @@ def handle_youtube_link(message):
     with open("kaggle_task/kernel-metadata.json", "w") as f:
         json.dump(metadata, f)
 
-    # Dorong (Push) tugas ke Kaggle menggunakan Terminal (Subprocess)
+    # Kirim ke Kaggle! (Otomatis menggunakan KAGGLE_API_TOKEN dari env Koyeb)
     try:
         subprocess.run(["kaggle", "kernels", "push", "-p", "kaggle_task"], check=True)
-        bot.send_message(message.chat.id, "🚀 Tugas berhasil dikirim ke Pabrik GPU! Bot akan diam sampai Kaggle mengirimkan video ke chat ini.")
+        bot.send_message(message.chat.id, "🚀 Script dikirim ke Kaggle!")
     except subprocess.CalledProcessError as e:
-        bot.send_message(message.chat.id, f"❌ Gagal memicu Kaggle. Pastikan KAGGLE_USERNAME dan KAGGLE_KEY di Environment Variables sudah benar.\nError: {e}")
+        bot.send_message(message.chat.id, f"❌ Gagal memicu Kaggle. Error: {e}")
 
 # --- 4. DUMMY WEB SERVER UNTUK KOYEB ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    # Halaman ini yang akan di-ping oleh UptimeRobot setiap 20 menit
-    return "Bot YouTube Clipper sedang berjalan aktif!"
+    return "Bot YT Clipper berjalan!"
 
 def run_web_server():
-    # Koyeb menggunakan environment variable PORT, defaultnya 8000
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
-    # Jalankan Web Server di "jalur" (thread) terpisah
     server_thread = Thread(target=run_web_server)
     server_thread.start()
     
-    # Jalankan Bot Telegram di jalur utama
-    print("Bot menyala...")
+    print("Bot menyala dan memantau chat...")
     bot.infinity_polling()
