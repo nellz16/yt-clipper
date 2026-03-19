@@ -113,24 +113,23 @@ def analyze_video(video_path, requested_pos):
 def main_process():
     edit_msg("Menyiapkan Mesin Cloud & AI...", 10)
     
-    # FIX YT-DLP 2026.03.17: Force install modul ekstensi curl-cffi
     if FACE_POS in ['auto', 'br', 'bl', 'tr', 'tl']:
-        run_cmd('pip install -q -U "yt-dlp[curl-cffi]>=2026.03.17" opencv-python-headless mediapipe numpy')
+        run_cmd('pip install -q --upgrade yt-dlp opencv-python-headless mediapipe numpy')
     else:
-        run_cmd('pip install -q -U "yt-dlp[curl-cffi]>=2026.03.17"')
+        run_cmd('pip install -q --upgrade yt-dlp')
 
-    # FIX KICK 403: Gunakan impersonasi Safari khusus untuk Kick agar lolos Cloudflare
-    impersonate_target = '--impersonate "safari"' if "kick.com" in URL else '--impersonate "chrome"'
-
+    # ALUR 1: MANUAL TIME (KICK/M3U8 atau YOUTUBE MANUAL)
     if MANUAL_TIME != "none":
         edit_msg(f"Mengunduh cuplikan [{MANUAL_TIME}]...", 30)
-        dl_cmd = f'yt-dlp {impersonate_target} -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{MANUAL_TIME}" --force-keyframes-at-cuts -o "input.mp4" "{URL}"'
+        # Hapus impersonate karena m3u8 langsung ditembak oleh yt-dlp/ffmpeg tanpa Cloudflare
+        dl_cmd = f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{MANUAL_TIME}" --force-keyframes-at-cuts -o "input.mp4" "{URL}"'
         run_cmd(dl_cmd)
 
+    # ALUR 2: AUTO HEATMAP (KHUSUS YOUTUBE)
     else:
         edit_msg("Memindai Grafik YouTube (Mencari Top 5)...", 20)
         try:
-            info_json = subprocess.check_output(f'yt-dlp {impersonate_target} --dump-json "{URL}"', shell=True, text=True)
+            info_json = subprocess.check_output(f'yt-dlp --dump-json "{URL}"', shell=True, text=True)
             info = json.loads(info_json)
             heatmap = info.get('heatmap')
             if heatmap:
@@ -156,18 +155,21 @@ def main_process():
                         data={"chat_id": CHAT_ID, "text": ref_text, "parse_mode": "Markdown"})
                     
                     edit_msg(f"Mengunduh cuplikan Juara 1...", 40)
-                    dl_cmd = f'yt-dlp {impersonate_target} -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{peak1_s}-{peak1_e}" --force-keyframes-at-cuts -o "input.mp4" "{URL}"'
+                    dl_cmd = f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{peak1_s}-{peak1_e}" --force-keyframes-at-cuts -o "input.mp4" "{URL}"'
                     run_cmd(dl_cmd)
                 else:
                     edit_msg("Heatmap tidak valid. Mengunduh 1 menit pertama...", 40)
-                    run_cmd(f'yt-dlp {impersonate_target} -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
+                    run_cmd(f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
             else:
                 edit_msg("Video tanpa Heatmap. Mengunduh 1 menit pertama...", 40)
-                run_cmd(f'yt-dlp {impersonate_target} -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
+                run_cmd(f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
         except Exception:
             edit_msg("Gagal baca Heatmap. Mengunduh 1 menit pertama...", 40)
-            run_cmd(f'yt-dlp {impersonate_target} -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
+            run_cmd(f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
 
+    # ===============================
+    # TAHAP ANALISIS & RENDER VIDEO
+    # ===============================
     if FACE_POS == "pad": mode, data = "pad", None
     elif FACE_POS in ['auto', 'br', 'bl', 'tr', 'tl']:
         edit_msg("AI memindai tata letak objek...", 60)
@@ -209,11 +211,53 @@ except Exception as e:
         data={"chat_id": CHAT_ID, "message_id": MSG_ID, "text": f"❌ Terjadi Kesalahan Sistem:\n\n{safe_error}"})
 """
 
-# --- 3. ALUR BOT TELEGRAM & AUTO DELETE KAGGLE ---
+# --- 3. ALUR BOT TELEGRAM ---
 
-def start_new_session(chat_id, url):
-    is_youtube = any(domain in url.lower() for domain in ['youtube.com', 'youtu.be'])
-    user_states[chat_id] = {'url': url, 'is_youtube': is_youtube, 'status': 'waiting_input'}
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    if message.chat.id != ALLOWED_USER_ID: return
+    
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🟥 YouTube", callback_data="plat_yt"),
+               InlineKeyboardButton("🟩 Kick (m3u8)", callback_data="plat_kick"))
+    
+    # Hapus state agar sesi bersih
+    if message.chat.id in user_states: del user_states[message.chat.id]
+    
+    bot.reply_to(message, "🤖 *Pabrik Video Aktif!*\n\nSilakan pilih sumber platform video Anda di bawah ini:", reply_markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('plat_'))
+def handle_platform(call):
+    chat_id = call.message.chat.id
+    plat = call.data.replace('plat_', '')
+    
+    user_states[chat_id] = {'platform': plat, 'step': 'wait_url'}
+    
+    if plat == 'yt':
+        msg_text = "📺 *Mode YouTube*\n\nSilakan kirimkan link YouTube (Contoh: `https://youtu.be/...`)."
+    else:
+        msg_text = "🟩 *Mode Kick*\n\nSilakan kirimkan link **master.m3u8** dari Kick.\n_(Cara: Buka Kick di Chrome Laptop > Tekan F12 > Network > Cari 'm3u8' > Copy link)_"
+        
+    bot.edit_message_text(msg_text, chat_id=chat_id, message_id=call.message.message_id, parse_mode="Markdown")
+
+@bot.message_handler(func=lambda message: message.text.strip().startswith("http"))
+def handle_url(message):
+    chat_id = message.chat.id
+    if chat_id != ALLOWED_USER_ID: return
+    
+    if chat_id not in user_states or user_states[chat_id].get('step') != 'wait_url':
+        bot.reply_to(message, "⚠️ Tolong tekan `/start` terlebih dahulu untuk memulai sesi baru.", parse_mode="Markdown")
+        return
+        
+    url = message.text.strip().split()[0]
+    plat = user_states[chat_id]['platform']
+    
+    if plat == 'kick' and 'm3u8' not in url.lower():
+        bot.reply_to(message, "❌ Link salah! Untuk Kick, Anda harus mengirim link yang berakhiran **.m3u8**", parse_mode="Markdown")
+        return
+
+    user_states[chat_id]['url'] = url
+    user_states[chat_id]['step'] = 'wait_mode'
 
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -223,97 +267,58 @@ def start_new_session(chat_id, url):
         InlineKeyboardButton("🎯 Facecam Kanan", callback_data="mode_br"),
         InlineKeyboardButton("🎯 Facecam Kiri", callback_data="mode_bl")
     )
-    bot.send_message(chat_id, "⚙️ *Langkah 1: Pilih Tata Letak Layar*", reply_markup=markup, parse_mode="Markdown")
-
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    if message.chat.id != ALLOWED_USER_ID: return
-    bot.reply_to(message, "🤖 *Pabrik Video Aktif!*\nKirimkan link YouTube, Twitch, atau Kick untuk memulai.", parse_mode="Markdown")
-
-@bot.message_handler(func=lambda message: message.text.strip().startswith("http"))
-def handle_url(message):
-    if message.chat.id != ALLOWED_USER_ID: return
-    
-    url = message.text.strip().split()[0]
-    chat_id = message.chat.id
-    
-    if chat_id in user_states:
-        if user_states[chat_id].get('status') == 'processing':
-            bot.reply_to(message, "⏳ Harap tunggu proses sebelumnya selesai...")
-            return
-        else:
-            user_states[chat_id]['pending_url'] = url
-            markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("✅ Ya", callback_data="cancel_prev"))
-            bot.reply_to(message, "⚠️ Ada proses yang belum dilanjutkan. Batalkan proses sebelumnya?", reply_markup=markup)
-            return
-
-    start_new_session(chat_id, url)
-
-@bot.callback_query_handler(func=lambda call: call.data == 'cancel_prev')
-def handle_cancel_prev(call):
-    chat_id = call.message.chat.id
-    if chat_id in user_states and 'pending_url' in user_states[chat_id]:
-        new_url = user_states[chat_id]['pending_url']
-        bot.delete_message(chat_id, call.message.message_id)
-        start_new_session(chat_id, new_url)
+    bot.reply_to(message, "⚙️ *Langkah 1: Pilih Tata Letak Layar*", reply_markup=markup, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('mode_'))
 def handle_mode_selection(call):
     chat_id = call.message.chat.id
-    if chat_id not in user_states: return
+    if chat_id not in user_states or user_states[chat_id].get('step') != 'wait_mode': return
 
     user_states[chat_id]['mode'] = call.data.replace('mode_', '')
-    is_youtube = user_states[chat_id].get('is_youtube', False)
+    user_states[chat_id]['step'] = 'wait_time'
+    plat = user_states[chat_id]['platform']
     
     markup = InlineKeyboardMarkup()
-    if is_youtube:
+    if plat == 'yt':
         markup.add(InlineKeyboardButton("🚀 Proses Auto Viral", callback_data="run_auto"))
         msg_text = "⏱️ *Langkah 2: Pilih Durasi Waktu*\n\nKlik tombol *Proses Auto* untuk memotong momen teramai, *ATAU* ketik langsung durasi manual di chat ini (Contoh: `01:10:00-01:11:00`)."
     else:
-        msg_text = "⏱️ *Langkah 2: Masukkan Durasi Manual*\n\nKarena ini bukan YouTube, ketik langsung rentang waktu video di chat ini untuk dipotong (Contoh: `01:10:00-01:11:00`)."
+        msg_text = "⏱️ *Langkah 2: Masukkan Durasi Manual*\n\nKarena ini adalah file `m3u8`, fitur Auto-Viral tidak tersedia.\n\nKetik langsung rentang waktu video di chat ini untuk dipotong (Contoh: `01:10:00-01:11:00`)."
     
     bot.edit_message_text(text=msg_text, chat_id=chat_id, message_id=call.message.message_id, 
-                          reply_markup=markup if is_youtube else None, parse_mode="Markdown")
+                          reply_markup=markup if plat == 'yt' else None, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data == 'run_auto')
 def trigger_auto_run(call):
     chat_id = call.message.chat.id
-    if chat_id not in user_states: return
+    if chat_id not in user_states or user_states[chat_id].get('step') != 'wait_time': return
         
     msg = bot.edit_message_text("[░░░░░░░░░░] 0% - Mengirim tugas ke Mesin Cloud...", 
                           chat_id=chat_id, message_id=call.message.message_id)
     dispatch_kaggle_task(chat_id, msg.message_id, manual_time="none")
 
-@bot.message_handler(func=lambda message: "-" in message.text and message.chat.id in user_states and 'mode' in user_states[message.chat.id])
+@bot.message_handler(func=lambda message: "-" in message.text and ":" in message.text)
 def handle_manual_time(message):
     chat_id = message.chat.id
+    if chat_id not in user_states or user_states[chat_id].get('step') != 'wait_time': return
+    
     manual_time = message.text.strip()
     msg = bot.send_message(chat_id, "[░░░░░░░░░░] 0% - Mengirim tugas manual ke Mesin Cloud...")
     dispatch_kaggle_task(chat_id, msg.message_id, manual_time=manual_time)
 
 def monitor_kaggle_task(chat_id, slug_id):
     fail_count = 0
-    while fail_count < 15: # Memantau hingga ~5 menit setelah selesai
+    while fail_count < 15:
         time.sleep(20)
         try:
             res = subprocess.check_output(["kaggle", "kernels", "status", f"{KAGGLE_USERNAME}/{slug_id}"], text=True)
             if any(x in res.lower() for x in ["complete", "error", "cancel"]):
-                # 1. Bersihkan Antrean User
                 if chat_id in user_states: del user_states[chat_id]
-                
-                # 2. SISTEM PENGHANCUR OTOMATIS: Hapus Task dari Kaggle
-                try:
-                    subprocess.run(["kaggle", "kernels", "delete", f"{KAGGLE_USERNAME}/{slug_id}"], check=False)
-                    print(f"✅ Kaggle Task {slug_id} berhasil dihancurkan.")
-                except Exception as e:
-                    print(f"⚠️ Gagal menghapus task: {str(e)}")
                 break
         except Exception:
             fail_count += 1
             if fail_count >= 15:
                 if chat_id in user_states: del user_states[chat_id]
-                subprocess.run(["kaggle", "kernels", "delete", f"{KAGGLE_USERNAME}/{slug_id}"], check=False)
                 break
 
 def dispatch_kaggle_task(chat_id, msg_id, manual_time):
@@ -321,7 +326,7 @@ def dispatch_kaggle_task(chat_id, msg_id, manual_time):
     url = state.get('url', '')
     face_pos = state.get('mode', 'auto')
     
-    user_states[chat_id]['status'] = 'processing'
+    user_states[chat_id]['step'] = 'processing'
     
     os.makedirs("kaggle_task", exist_ok=True)
     worker_vars = f'URL = "{url}"\nCHAT_ID = "{chat_id}"\nMSG_ID = "{msg_id}"\nBOT_TOKEN = "{TOKEN}"\nMANUAL_TIME = "{manual_time}"\nFACE_POS = "{face_pos}"\n'
