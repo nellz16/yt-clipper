@@ -13,7 +13,7 @@ KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME")
 
 bot = telebot.TeleBot(TOKEN)
 
-# --- 2. KODE PEKERJA KAGGLE (DENGAN PLAN B OPEN-CV) ---
+# --- 2. KODE PEKERJA KAGGLE (BUG FIX FFMPEG) ---
 KAGGLE_WORKER_CODE = """
 import os
 import subprocess
@@ -30,7 +30,6 @@ def analyze_video(video_path):
     import cv2
     import numpy as np
     
-    # Refresh cache memori Python setelah instalasi
     importlib.invalidate_caches()
     
     cap = cv2.VideoCapture(video_path)
@@ -39,7 +38,6 @@ def analyze_video(video_path):
     face_boxes = []
 
     try:
-        # PLAN A: Gunakan Google MediaPipe (Sangat Akurat)
         from mediapipe.python.solutions import face_detection as mp_faces
         
         with mp_faces.FaceDetection(model_selection=1, min_detection_confidence=0.4) as face_detection:
@@ -57,8 +55,7 @@ def analyze_video(video_path):
                         face_boxes.append((bbox.xmin, bbox.ymin, bbox.width, bbox.height))
                         break
     except Exception as e:
-        # PLAN B: Jika MediaPipe Error, gunakan OpenCV Haar Cascade (Anti-Gagal)
-        send_telegram_msg("⚠️ MediaPipe sibuk, mengalihkan ke sistem Mata AI Cadangan (OpenCV)...")
+        send_telegram_msg("⚠️ Mengalihkan ke sistem Mata AI Cadangan (OpenCV)...")
         face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         for i in range(15):
             cap.set(cv2.CAP_PROP_POS_FRAMES, i * step)
@@ -76,7 +73,7 @@ def analyze_video(video_path):
     cap.release()
 
     if not face_boxes:
-        return "irl", 0.5 # Default potong tengah jika AI tidak menemukan wajah
+        return "irl", 0.5 
 
     avg_box = np.mean(face_boxes, axis=0)
     xmin, ymin, w, h = avg_box
@@ -101,7 +98,7 @@ def run_worker():
         subprocess.run("pip install -q --upgrade yt-dlp opencv-python-headless mediapipe numpy", shell=True, check=True)
         
         if MANUAL_TIME != "none":
-            send_telegram_msg(f"⏱️ Mode Manual Aktif! Memotong pada durasi: {MANUAL_TIME}")
+            send_telegram_msg(f"⏱️ Mode Manual Aktif! Memotong durasi: {MANUAL_TIME}")
             download_section = f'--download-sections "*{MANUAL_TIME}"'
         else:
             send_telegram_msg("🔍 Memindai Heatmap YouTube...")
@@ -151,12 +148,13 @@ def run_worker():
         
         if mode == "irl":
             face_x = data
-            send_telegram_msg("👤 Mode Terdeteksi: IRL Stream / Podcast (Smart Tracking Center)")
-            x_expr = f"max(0, min(iw-ow, iw*{face_x} - ow/2))"
+            send_telegram_msg("👤 Mode: IRL Stream (Smart Tracking Center)")
+            # BUG FIX: FFmpeg otomatis menjaga batas crop, kita hapus fungsi koma (max/min)
+            x_expr = f"iw*{face_x} - ow/2"
             ffmpeg_cmd = f'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih:{x_expr}:0" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
         else:
             c_x, c_y, c_w, c_h = data
-            send_telegram_msg("🎮 Mode Terdeteksi: Gameplay + Facecam (Auto Crop Layout)")
+            send_telegram_msg("🎮 Mode: Gameplay + Facecam (Auto Crop Layout)")
             filter_complex = (
                 f"[0:v]crop=ih*0.9:ih:(iw-ow)/2:0,scale=1080:1200[top]; "
                 f"[0:v]crop=iw*{c_w}:ih*{c_h}:iw*{c_x}:ih*{c_y},scale=1080:720:force_original_aspect_ratio=increase,crop=1080:720[bottom]; "
