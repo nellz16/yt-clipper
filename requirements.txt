@@ -1,0 +1,2 @@
+pyTelegramBotAPI==4.32.0
+kaggle==2.0.0
