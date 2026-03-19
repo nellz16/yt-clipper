@@ -48,7 +48,6 @@ def fmt_t(seconds):
     m, s = divmod(r, 60)
     return f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
 
-# FUNGSI BARU: Penangkap Error Presisi
 def run_cmd(cmd):
     res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if res.returncode != 0:
@@ -115,21 +114,22 @@ def analyze_video(video_path, requested_pos):
 
 def main_process():
     edit_msg("Menyiapkan Mesin Cloud & AI...", 10)
+    # BUG FIX KICK 403: Menginstal curl-cffi untuk membajak sistem keamanan Cloudflare
     if FACE_POS in ['auto', 'br', 'bl', 'tr', 'tl']:
-        run_cmd("pip install -q --upgrade yt-dlp opencv-python-headless mediapipe numpy")
+        run_cmd("pip install -q --upgrade yt-dlp curl-cffi opencv-python-headless mediapipe numpy")
     else:
-        run_cmd("pip install -q --upgrade yt-dlp")
+        run_cmd("pip install -q --upgrade yt-dlp curl-cffi")
 
-    # BUG FIX KICK/TWITCH: URL Diapit tanda kutip "{URL}" dan ditambah --force-keyframes-at-cuts
+    # BUG FIX KICK 403: Menambahkan --impersonate "chrome" agar yt-dlp menyamar sebagai browser asli
     if MANUAL_TIME != "none":
         edit_msg(f"Mengunduh cuplikan [{MANUAL_TIME}]...", 30)
-        dl_cmd = f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{MANUAL_TIME}" --force-keyframes-at-cuts -o "input.mp4" "{URL}"'
+        dl_cmd = f'yt-dlp --impersonate "chrome" -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{MANUAL_TIME}" --force-keyframes-at-cuts -o "input.mp4" "{URL}"'
         run_cmd(dl_cmd)
 
     else:
         edit_msg("Memindai Grafik YouTube (Mencari Top 5)...", 20)
         try:
-            info_json = subprocess.check_output(f'yt-dlp --dump-json "{URL}"', shell=True, text=True)
+            info_json = subprocess.check_output(f'yt-dlp --impersonate "chrome" --dump-json "{URL}"', shell=True, text=True)
             info = json.loads(info_json)
             heatmap = info.get('heatmap')
             if heatmap:
@@ -155,17 +155,17 @@ def main_process():
                         data={"chat_id": CHAT_ID, "text": ref_text, "parse_mode": "Markdown"})
                     
                     edit_msg(f"Mengunduh cuplikan Juara 1...", 40)
-                    dl_cmd = f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{peak1_s}-{peak1_e}" --force-keyframes-at-cuts -o "input.mp4" "{URL}"'
+                    dl_cmd = f'yt-dlp --impersonate "chrome" -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{peak1_s}-{peak1_e}" --force-keyframes-at-cuts -o "input.mp4" "{URL}"'
                     run_cmd(dl_cmd)
                 else:
                     edit_msg("Heatmap tidak valid. Mengunduh 1 menit pertama...", 40)
-                    run_cmd(f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
+                    run_cmd(f'yt-dlp --impersonate "chrome" -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
             else:
                 edit_msg("Video tanpa Heatmap. Mengunduh 1 menit pertama...", 40)
-                run_cmd(f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
+                run_cmd(f'yt-dlp --impersonate "chrome" -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
         except Exception:
             edit_msg("Gagal baca Heatmap. Mengunduh 1 menit pertama...", 40)
-            run_cmd(f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
+            run_cmd(f'yt-dlp --impersonate "chrome" -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
 
     if FACE_POS == "pad": mode, data = "pad", None
     elif FACE_POS in ['auto', 'br', 'bl', 'tr', 'tl']:
@@ -236,13 +236,11 @@ def handle_url(message):
     url = message.text.strip().split()[0]
     chat_id = message.chat.id
     
-    # SISTEM KEAMANAN FLOW (CEK STATUS)
     if chat_id in user_states:
         if user_states[chat_id].get('status') == 'processing':
             bot.reply_to(message, "⏳ Harap tunggu proses sebelumnya selesai...")
             return
         else:
-            # Jika user sedang di tahap pilih tombol tapi ngirim URL baru
             user_states[chat_id]['pending_url'] = url
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("✅ Ya", callback_data="cancel_prev"))
@@ -293,11 +291,10 @@ def handle_manual_time(message):
     msg = bot.send_message(chat_id, "[░░░░░░░░░░] 0% - Mengirim tugas manual ke Mesin Cloud...")
     dispatch_kaggle_task(chat_id, msg.message_id, manual_time=manual_time)
 
-# BACKGROUND THREAD: Mengawasi Kaggle agar Koyeb tahu kapan render selesai
 def monitor_kaggle_task(chat_id, slug_id):
     fail_count = 0
     while fail_count < 10:
-        time.sleep(20) # Cek status setiap 20 detik
+        time.sleep(20)
         try:
             res = subprocess.check_output(["kaggle", "kernels", "status", f"{KAGGLE_USERNAME}/{slug_id}"], text=True)
             if any(x in res.lower() for x in ["complete", "error", "cancel"]):
@@ -314,7 +311,6 @@ def dispatch_kaggle_task(chat_id, msg_id, manual_time):
     url = state.get('url', '')
     face_pos = state.get('mode', 'auto')
     
-    # Kunci antrean agar user tidak bisa memencet/spam link baru
     user_states[chat_id]['status'] = 'processing'
     
     os.makedirs("kaggle_task", exist_ok=True)
@@ -332,7 +328,6 @@ def dispatch_kaggle_task(chat_id, msg_id, manual_time):
 
     try:
         subprocess.run(["kaggle", "kernels", "push", "-p", "kaggle_task"], check=True)
-        # Mulai Thread Pengawas Kaggle di Latar Belakang
         Thread(target=monitor_kaggle_task, args=(chat_id, slug_id)).start()
     except Exception:
         bot.edit_message_text("❌ Gagal terhubung ke Cloud Engine.", chat_id=chat_id, message_id=msg_id)
