@@ -24,7 +24,7 @@ def fmt_t(seconds):
     m, s = divmod(r, 60)
     return f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
 
-# --- KODE PEKERJA CLOUD (KAGGLE - 1 TASK SYSTEM) ---
+# --- KODE PEKERJA CLOUD (KAGGLE - MULTI PLATFORM) ---
 KAGGLE_WORKER_CODE = r"""
 import os
 import subprocess
@@ -111,12 +111,14 @@ def main_process():
     else:
         subprocess.run("pip install -q --upgrade yt-dlp", shell=True, check=True)
 
-    # ALUR 1: MANUAL TIME
+    # ALUR 1: MANUAL TIME (BERLAKU UNTUK SEMUA PLATFORM YOUTUBE/TWITCH/KICK DLL)
     if MANUAL_TIME != "none":
-        edit_msg(f"Mengunduh cuplikan manual [{MANUAL_TIME}]...", 30)
-        subprocess.run(f'yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" --download-sections "*{MANUAL_TIME}" -o "input.mp4" {URL}', shell=True, check=True)
+        edit_msg(f"Mengunduh cuplikan [{MANUAL_TIME}]...", 30)
+        # BUG FIX: Menggunakan merge-output-format mp4 agar format Twitch/Kick (mkv/ts) dipaksa menjadi mp4
+        dl_cmd = f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{MANUAL_TIME}" -o "input.mp4" {URL}'
+        subprocess.run(dl_cmd, shell=True, check=True)
 
-    # ALUR 2: AUTO HEATMAP (CARI JUARA 1 + REFERENSI JUARA LAIN)
+    # ALUR 2: AUTO HEATMAP (KHUSUS YOUTUBE)
     else:
         edit_msg("Memindai Grafik YouTube (Mencari Top 5)...", 20)
         try:
@@ -135,7 +137,6 @@ def main_process():
                     peak1_s, peak1_e = max(0, top_peaks[0] - 30), max(0, top_peaks[0] - 30) + 60
                     target_time = f"{fmt_t(peak1_s)}-{fmt_t(peak1_e)}"
                     
-                    # Buat pesan referensi juara lainnya
                     ref_text = f"🔥 *Mengambil Juara 1 otomatis:* `{target_time}`\n\n*Referensi Momen Lainnya:*\n_(Klik teks angka untuk copy manual)_\n"
                     medals = ["🥇", "🥈", "🥉", "🏅", "🏅"]
                     for i, peak in enumerate(top_peaks):
@@ -143,22 +144,21 @@ def main_process():
                         s_t, e_t = max(0, peak - 30), max(0, peak - 30) + 60
                         ref_text += f"{medals[i]} Juara {i+1}: `{fmt_t(s_t)}-{fmt_t(e_t)}`\n"
                     
-                    # Kirim pesan referensi sebagai pesan baru
                     requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", 
                         data={"chat_id": CHAT_ID, "text": ref_text, "parse_mode": "Markdown"})
                     
                     edit_msg(f"Mengunduh cuplikan Juara 1...", 40)
-                    dl_cmd = f'yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" --download-sections "*{peak1_s}-{peak1_e}" -o "input.mp4" {URL}'
+                    dl_cmd = f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{peak1_s}-{peak1_e}" -o "input.mp4" {URL}'
                     subprocess.run(dl_cmd, shell=True, check=True)
                 else:
                     edit_msg("Heatmap tidak valid. Mengunduh 1 menit pertama...", 40)
-                    subprocess.run(f'yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" --download-sections "*0-60" -o "input.mp4" {URL}', shell=True, check=True)
+                    subprocess.run(f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" {URL}', shell=True, check=True)
             else:
                 edit_msg("Video tanpa Heatmap. Mengunduh 1 menit pertama...", 40)
-                subprocess.run(f'yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" --download-sections "*0-60" -o "input.mp4" {URL}', shell=True, check=True)
+                subprocess.run(f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" {URL}', shell=True, check=True)
         except Exception:
             edit_msg("Gagal baca Heatmap. Mengunduh 1 menit pertama...", 40)
-            subprocess.run(f'yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" --download-sections "*0-60" -o "input.mp4" {URL}', shell=True, check=True)
+            subprocess.run(f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" {URL}', shell=True, check=True)
 
     # ===============================
     # TAHAP ANALISIS & RENDER VIDEO
@@ -210,13 +210,17 @@ except Exception as e:
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     if message.chat.id != ALLOWED_USER_ID: return
-    bot.reply_to(message, "🤖 *Pabrik Video Aktif!*\nKirimkan link YouTube untuk memulai.", parse_mode="Markdown")
+    bot.reply_to(message, "🤖 *Pabrik Video Aktif!*\nKirimkan link YouTube, Twitch, atau Kick untuk memulai.", parse_mode="Markdown")
 
-@bot.message_handler(func=lambda message: "youtube.com" in message.text or "youtu.be" in message.text)
+# PERUBAHAN: Sekarang bot menerima link apapun yang diawali "http"
+@bot.message_handler(func=lambda message: message.text.strip().startswith("http"))
 def handle_url(message):
     if message.chat.id != ALLOWED_USER_ID: return
+    
     url = message.text.strip().split()[0]
-    user_states[message.chat.id] = {'url': url}
+    # Deteksi apakah ini platform YouTube atau bukan
+    is_youtube = any(domain in url.lower() for domain in ['youtube.com', 'youtu.be'])
+    user_states[message.chat.id] = {'url': url, 'is_youtube': is_youtube}
 
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -234,13 +238,21 @@ def handle_mode_selection(call):
     if chat_id not in user_states: return
 
     user_states[chat_id]['mode'] = call.data.replace('mode_', '')
+    is_youtube = user_states[chat_id].get('is_youtube', False)
+    
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🚀 Proses Auto (Ambil Juara 1)", callback_data="run_auto"))
+    
+    # UI DINAMIS: Jika YouTube, berikan tombol Auto Viral
+    if is_youtube:
+        markup.add(InlineKeyboardButton("🚀 Proses Auto Viral (Ambil Juara 1)", callback_data="run_auto"))
+        msg_text = "⏱️ *Langkah 2: Pilih Durasi Waktu*\n\nKlik tombol *Proses Auto* untuk memotong momen teramai, *ATAU* ketik langsung durasi manual di chat ini (Contoh: `01:10:00-01:11:00`)."
+    # Jika Twitch/Kick, sembunyikan tombol Auto dan minta manual
+    else:
+        msg_text = "⏱️ *Langkah 2: Masukkan Durasi Manual*\n\nKarena ini bukan YouTube, fitur Auto-Viral tidak tersedia.\n\nSilakan ketik langsung rentang waktu video di chat ini untuk dipotong (Contoh: `01:10:00-01:11:00`)."
     
     bot.edit_message_text(
-        "⏱️ *Langkah 2: Pilih Durasi Waktu*\n\n"
-        "Klik tombol *Proses Auto* untuk otomatis memotong grafik keramaian tertinggi, *ATAU* ketik langsung durasi manual di chat ini (Contoh: `01:10:00-01:11:00`).",
-        chat_id=chat_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="Markdown"
+        text=msg_text, chat_id=chat_id, message_id=call.message.message_id, 
+        reply_markup=markup if is_youtube else None, parse_mode="Markdown"
     )
 
 @bot.callback_query_handler(func=lambda call: call.data == 'run_auto')
