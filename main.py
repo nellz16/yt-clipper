@@ -81,10 +81,9 @@ def handle_youtube_link(message):
     with open("kaggle_task/script.py", "w") as f:
         f.write(script_content)
 
-    # PERBAIKAN METADATA: Kaggle mewajibkan kita memakai string ("true")
     metadata = {
       "id": f"{KAGGLE_USERNAME}/yt-clipper-task",
-      "title": "YT Clipper Auto Task",
+      "title": "yt-clipper-task",
       "code_file": "script.py",
       "language": "python",
       "kernel_type": "script",
@@ -92,6 +91,7 @@ def handle_youtube_link(message):
       "enable_gpu": "true",
       "enable_internet": "true"
     }
+
     with open("kaggle_task/kernel-metadata.json", "w") as f:
         json.dump(metadata, f)
 
