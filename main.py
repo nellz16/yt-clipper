@@ -8,6 +8,8 @@ from threading import Thread
 import logging
 import time
 from datetime import datetime
+
+# Menggunakan Python API resmi Kaggle untuk menghapus task
 from kaggle.api.kaggle_api_extended import KaggleApi
 
 # --- MENGHENINGKAN LOG KOYEB ---
@@ -20,7 +22,7 @@ KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME")
 
 bot = telebot.TeleBot(TOKEN)
 
-# Inisialisasi Kaggle Python API (Untuk fitur Auto-Delete)
+# Otentikasi Kaggle API (Digunakan khusus untuk menghancurkan Task)
 api = KaggleApi()
 api.authenticate()
 
@@ -124,13 +126,14 @@ def main_process():
     else:
         run_cmd("pip install -q --upgrade yt-dlp")
 
-    # KARENA URL SUDAH LANGSUNG MENUJU CDN (MASTER.M3U8) ATAU YOUTUBE NORMAL,
-    # KITA TIDAK PERLU IMPERSONATE LAGI.
+    # ALUR 1: MANUAL TIME (Twitch & Kick masuk ke sini)
     if MANUAL_TIME != "none":
         edit_msg(f"Mengunduh cuplikan [{MANUAL_TIME}]...", 30)
+        # yt-dlp otomatis menangani GraphQL Twitch dan .m3u8 Kick secara langsung
         dl_cmd = f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{MANUAL_TIME}" --force-keyframes-at-cuts -o "input.mp4" "{URL}"'
         run_cmd(dl_cmd)
 
+    # ALUR 2: AUTO HEATMAP (KHUSUS YOUTUBE)
     else:
         edit_msg("Memindai Grafik YouTube (Mencari Top 5)...", 20)
         try:
@@ -172,6 +175,9 @@ def main_process():
             edit_msg("Gagal baca Heatmap. Mengunduh 1 menit pertama...", 40)
             run_cmd(f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
 
+    # ===============================
+    # TAHAP ANALISIS & RENDER VIDEO
+    # ===============================
     if FACE_POS == "pad": mode, data = "pad", None
     elif FACE_POS in ['auto', 'br', 'bl', 'tr', 'tl']:
         edit_msg("AI memindai tata letak objek...", 60)
@@ -215,57 +221,8 @@ except Exception as e:
 
 # --- 3. ALUR BOT TELEGRAM & AUTO DELETE API ---
 
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    if message.chat.id != ALLOWED_USER_ID: return
-    
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("📺 YouTube", callback_data="platform_youtube"),
-        InlineKeyboardButton("🟢 Kick (VOD)", callback_data="platform_kick")
-    )
-    bot.reply_to(message, "🤖 *Pabrik Video Aktif!*\n\nSilakan pilih platform sumber video:", reply_markup=markup, parse_mode="Markdown")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('platform_'))
-def handle_platform_selection(call):
-    chat_id = call.message.chat.id
-    platform = call.data.replace('platform_', '')
-    
-    # Cek apakah sedang ada proses berjalan
-    if chat_id in user_states and user_states[chat_id].get('status') == 'processing':
-        bot.answer_callback_query(call.id, "⏳ Harap tunggu proses sebelumnya selesai!", show_alert=True)
-        return
-
-    if platform == "youtube":
-        user_states[chat_id] = {'platform': 'youtube', 'status': 'waiting_url'}
-        bot.edit_message_text("📺 *Mode YouTube*\nSilakan kirimkan link YouTube yang valid.", chat_id=chat_id, message_id=call.message.message_id, parse_mode="Markdown")
-    elif platform == "kick":
-        user_states[chat_id] = {'platform': 'kick', 'status': 'waiting_url'}
-        bot.edit_message_text("🟢 *Mode Kick*\nSilakan kirimkan URL `master.m3u8` yang Anda dapatkan dari Developer Tools (F12).", chat_id=chat_id, message_id=call.message.message_id, parse_mode="Markdown")
-
-@bot.message_handler(func=lambda message: message.text.strip().startswith("http"))
-def handle_url(message):
-    chat_id = message.chat.id
-    if chat_id != ALLOWED_USER_ID: return
-    
-    # Jika belum klik /start atau tidak ada state
-    if chat_id not in user_states or user_states[chat_id].get('status') not in ['waiting_url', 'waiting_layout']:
-        bot.reply_to(message, "⚠️ Silakan ketik /start dan pilih platform terlebih dahulu.")
-        return
-
-    url = message.text.strip().split()[0]
-    platform = user_states[chat_id].get('platform')
-
-    # VALIDASI KETAT YOUTUBE
-    if platform == "youtube" and not any(domain in url.lower() for domain in ['youtube.com', 'youtu.be']):
-        bot.reply_to(message, "❌ Link salah! Kirimkan link YouTube, atau ulangi /start untuk mengganti platform.")
-        return
-        
-    # VALIDASI KETAT KICK M3U8
-    if platform == "kick" and "master.m3u8" not in url.lower():
-        bot.reply_to(message, "❌ Link salah! Anda berada di Mode Kick. Anda HARUS mengirimkan link berekstensi `master.m3u8`.")
-        return
-
+def start_new_session(chat_id, url):
+    platform = user_states[chat_id]['platform']
     user_states[chat_id]['url'] = url
     user_states[chat_id]['status'] = 'waiting_layout'
 
@@ -277,7 +234,84 @@ def handle_url(message):
         InlineKeyboardButton("🎯 Facecam Kanan", callback_data="mode_br"),
         InlineKeyboardButton("🎯 Facecam Kiri", callback_data="mode_bl")
     )
-    bot.reply_to(message, "⚙️ *Langkah 1: Pilih Tata Letak Layar*", reply_markup=markup, parse_mode="Markdown")
+    bot.send_message(chat_id, "⚙️ *Langkah 1: Pilih Tata Letak Layar*", reply_markup=markup, parse_mode="Markdown")
+
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    if message.chat.id != ALLOWED_USER_ID: return
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton("📺 YouTube", callback_data="platform_youtube"),
+        InlineKeyboardButton("🟪 Twitch", callback_data="platform_twitch"),
+        InlineKeyboardButton("🟢 Kick (M3U8 Backdoor)", callback_data="platform_kick")
+    )
+    bot.reply_to(message, "🤖 *Pabrik Video Aktif!*\n\nSilakan pilih platform sumber video:", reply_markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('platform_'))
+def handle_platform_selection(call):
+    chat_id = call.message.chat.id
+    platform = call.data.replace('platform_', '')
+    
+    if chat_id in user_states and user_states[chat_id].get('status') == 'processing':
+        bot.answer_callback_query(call.id, "⏳ Harap tunggu proses sebelumnya selesai!", show_alert=True)
+        return
+
+    user_states[chat_id] = {'platform': platform, 'status': 'waiting_url'}
+    
+    if platform == "youtube":
+        bot.edit_message_text("📺 *Mode YouTube*\nSilakan kirimkan link YouTube yang valid.", chat_id=chat_id, message_id=call.message.message_id, parse_mode="Markdown")
+    elif platform == "twitch":
+        bot.edit_message_text("🟪 *Mode Twitch*\nSilakan kirimkan link VOD/Klip Twitch biasa (Contoh: `https://www.twitch.tv/videos/123...`).", chat_id=chat_id, message_id=call.message.message_id, parse_mode="Markdown")
+    elif platform == "kick":
+        bot.edit_message_text("🟢 *Mode Kick*\nSilakan kirimkan URL `master.m3u8` yang Anda dapatkan dari Developer Tools (F12).", chat_id=chat_id, message_id=call.message.message_id, parse_mode="Markdown")
+
+@bot.message_handler(func=lambda message: message.text.strip().startswith("http"))
+def handle_url(message):
+    chat_id = message.chat.id
+    if chat_id != ALLOWED_USER_ID: return
+    
+    # Keamanan Antrean & Batal
+    if chat_id in user_states:
+        if user_states[chat_id].get('status') == 'processing':
+            bot.reply_to(message, "⏳ Harap tunggu proses sebelumnya selesai...")
+            return
+        elif user_states[chat_id].get('status') == 'waiting_layout':
+            user_states[chat_id]['pending_url'] = message.text.strip().split()[0]
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("✅ Ya, Ulangi Proses", callback_data="cancel_prev"))
+            bot.reply_to(message, "⚠️ Ada proses yang belum dilanjutkan. Batalkan proses sebelumnya?", reply_markup=markup)
+            return
+
+    if chat_id not in user_states or user_states[chat_id].get('status') != 'waiting_url':
+        bot.reply_to(message, "⚠️ Silakan ketik /start dan pilih platform terlebih dahulu.")
+        return
+
+    url = message.text.strip().split()[0]
+    platform = user_states[chat_id].get('platform')
+
+    # VALIDASI LINK
+    if platform == "youtube" and not any(domain in url.lower() for domain in ['youtube.com', 'youtu.be']):
+        bot.reply_to(message, "❌ Link salah! Ini adalah Mode YouTube.")
+        return
+    elif platform == "twitch" and "twitch.tv" not in url.lower():
+        bot.reply_to(message, "❌ Link salah! Ini adalah Mode Twitch.")
+        return
+    elif platform == "kick" and "m3u8" not in url.lower():
+        bot.reply_to(message, "❌ Link salah! Mode Kick HARUS menggunakan URL berakhiran `master.m3u8` dari F12 Network Tab.")
+        return
+
+    start_new_session(chat_id, url)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'cancel_prev')
+def handle_cancel_prev(call):
+    chat_id = call.message.chat.id
+    if chat_id in user_states and 'pending_url' in user_states[chat_id]:
+        new_url = user_states[chat_id]['pending_url']
+        user_states[chat_id]['status'] = 'waiting_url' # Kembalikan state
+        bot.delete_message(chat_id, call.message.message_id)
+        # Validasi ulang URL pending
+        handle_url(type('obj', (object,), {'text': new_url, 'chat': type('obj', (object,), {'id': chat_id})})())
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('mode_'))
 def handle_mode_selection(call):
@@ -313,21 +347,24 @@ def handle_manual_time(message):
     msg = bot.send_message(chat_id, "[░░░░░░░░░░] 0% - Mengirim tugas manual ke Mesin Cloud...")
     dispatch_kaggle_task(chat_id, msg.message_id, manual_time=manual_time)
 
+# PENGAWAS BACKGROUND + AUTO DELETE VIA KAGGLE API PURE
 def monitor_kaggle_task(chat_id, slug_id):
     fail_count = 0
     while fail_count < 15:
         time.sleep(20)
         try:
+            # Tetap gunakan CLI ringan untuk cek status
             res = subprocess.check_output(["kaggle", "kernels", "status", f"{KAGGLE_USERNAME}/{slug_id}"], text=True)
             if any(x in res.lower() for x in ["complete", "error", "cancel"]):
+                # 1. Bersihkan State Chat
                 if chat_id in user_states: del user_states[chat_id]
                 
-                # PENGHANCURAN OTOMATIS MENGGUNAKAN PYTHON API (BUKAN CLI)
+                # 2. EKSEKUSI PENGHAPUSAN TASK DARI SERVER
                 try:
                     api.kernel_delete(KAGGLE_USERNAME, slug_id)
-                    print(f"✅ Kaggle Task {slug_id} berhasil dihancurkan dari server.")
+                    print(f"✅ Tugas {slug_id} sukses dihapus otomatis dari server Kaggle.")
                 except Exception as e:
-                    print(f"⚠️ Gagal menghapus task via API: {str(e)}")
+                    print(f"⚠️ Gagal menghapus task Kaggle: {str(e)}")
                 break
         except Exception:
             fail_count += 1
