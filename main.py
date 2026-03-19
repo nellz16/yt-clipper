@@ -8,11 +8,12 @@ from threading import Thread
 # --- 1. VARIABEL RAHASIA ---
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID", 0))
+
 KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME")
 
 bot = telebot.TeleBot(TOKEN)
 
-# --- 2. KODE PEKERJA KAGGLE (DENGAN ERROR HANDLING) ---
+# --- 2. KODE PEKERJA KAGGLE ---
 KAGGLE_WORKER_CODE = """
 import os
 import subprocess
@@ -24,43 +25,34 @@ CHAT_ID = "{chat_id}"
 BOT_TOKEN = "{bot_token}"
 
 def send_telegram_msg(text):
-    # Fungsi pembantu untuk mengirim teks biasa ke Telegram
     url_api = f"https://api.telegram.org/bot{{BOT_TOKEN}}/sendMessage"
     requests.post(url_api, data={{"chat_id": CHAT_ID, "text": text}})
 
 def run_worker():
     try:
-        # Beri kabar bahwa mesin Kaggle sudah berhasil menyala
         send_telegram_msg("⚙️ Mesin Kaggle menyala! Memulai proses instalasi dan unduh...")
-        
-        # 1. Install library (check=True agar jika gagal internet, masuk ke error)
         subprocess.run("pip install -q yt-dlp", shell=True, check=True)
         
-        # 2. Unduh Video
         send_telegram_msg("⬇️ Sedang mengunduh video dari YouTube...")
         download_cmd = f'yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" --download-sections "*00:00:00-00:01:00" -o "input.mp4" {{URL}}'
         subprocess.run(download_cmd, shell=True, check=True)
         
-        # 3. Potong Vertikal 9:16
         send_telegram_msg("✂️ Sedang memotong video ke rasio vertikal (9:16)...")
         ffmpeg_cmd = 'ffmpeg -i input.mp4 -vf "crop=ih*(9/16):ih" -c:a copy -y output.mp4'
         subprocess.run(ffmpeg_cmd, shell=True, check=True)
         
-        # 4. Kirim Video
         send_telegram_msg("🚀 Proses selesai! Mengirim video ke chat Anda...")
         with open('output.mp4', 'rb') as video_file:
             url_api = f"https://api.telegram.org/bot{{BOT_TOKEN}}/sendVideo"
             requests.post(url_api, data={{"chat_id": CHAT_ID, "caption": "✅ Video berhasil diproses!"}}, files={{"video": video_file}})
             
     except subprocess.CalledProcessError as e:
-        # Menangkap error jika yt-dlp atau ffmpeg gagal jalan
         error_msg = f"❌ Gagal saat menjalankan perintah (yt-dlp/ffmpeg).\\nKode Error: {{e.returncode}}"
         send_telegram_msg(error_msg)
         
     except Exception as e:
-        # Menangkap semua jenis error sistem (termasuk internet gagal, dll)
         error_trace = traceback.format_exc()
-        error_msg = f"❌ ERROR FATAL DI KAGGLE:\\n\\n{{str(e)}}\\n\\nTraceback (Detail):\\n{{error_trace[:800]}}"
+        error_msg = f"❌ ERROR FATAL DI KAGGLE:\\n\\n{{str(e)}}\\n\\nTraceback:\\n{{error_trace[:800]}}"
         send_telegram_msg(error_msg)
 
 run_worker()
@@ -89,24 +81,34 @@ def handle_youtube_link(message):
     with open("kaggle_task/script.py", "w") as f:
         f.write(script_content)
 
+    # PERBAIKAN METADATA: Kaggle mewajibkan kita memakai string ("true")
     metadata = {
       "id": f"{KAGGLE_USERNAME}/yt-clipper-task",
       "title": "YT Clipper Auto Task",
       "code_file": "script.py",
       "language": "python",
       "kernel_type": "script",
-      "is_private": True,
-      "enable_gpu": True,
-      "enable_internet": True
+      "is_private": "true",
+      "enable_gpu": "true",
+      "enable_internet": "true"
     }
     with open("kaggle_task/kernel-metadata.json", "w") as f:
         json.dump(metadata, f)
 
+    # PERBAIKAN PENANGKAP ERROR: Akan menangkap alasan asli kenapa Kaggle gagal (stderr)
     try:
-        subprocess.run(["kaggle", "kernels", "push", "-p", "kaggle_task"], check=True)
+        # Menambahkan parameter capture_output untuk menangkap pesan asli CLI Kaggle
+        subprocess.run(
+            ["kaggle", "kernels", "push", "-p", "kaggle_task"], 
+            check=True, 
+            capture_output=True, 
+            text=True
+        )
         bot.send_message(message.chat.id, "✅ Tugas sukses dikirim ke Kaggle! Bot akan memberikan update status secara real-time.")
     except subprocess.CalledProcessError as e:
-        bot.send_message(message.chat.id, f"❌ Gagal mengirim tugas dari Koyeb ke Kaggle. Error: {e}")
+        # Menangkap dan mengirim error otentikasi dari Kaggle
+        error_detail = e.stderr if e.stderr else e.stdout
+        bot.send_message(message.chat.id, f"❌ Gagal mengirim tugas ke Kaggle.\n\nDetail Sistem:\n{error_detail}")
 
 # --- 4. DUMMY WEB SERVER UNTUK KOYEB ---
 app = Flask(__name__)
