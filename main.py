@@ -25,7 +25,6 @@ def fmt_t(seconds):
     return f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
 
 # --- KODE PEKERJA CLOUD (KAGGLE) ---
-# Terdapat 2 Mode: 'analyze' (Cari Heatmap) & 'render' (Potong Video)
 KAGGLE_WORKER_CODE = """
 import os
 import subprocess
@@ -108,7 +107,7 @@ def analyze_video(video_path, requested_pos):
 def run_worker():
     try:
         # ==========================================================
-        # TUGAS 1: ANALISIS HEATMAP (Cepat & Ringan)
+        # TUGAS 1: ANALISIS HEATMAP
         # ==========================================================
         if TASK_TYPE == "analyze":
             edit_msg("Menyiapkan Sistem Analis (Bypass Anti-Bot)...", 20)
@@ -141,13 +140,13 @@ def run_worker():
                         return
             except Exception as e: pass
             
-            # Jika tidak ada heatmap / error
+            # BUG FIX: Mengubah \n menjadi \\n agar script tidak crash saat gagal cari heatmap
             requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText", 
-                data={"chat_id": CHAT_ID, "message_id": MSG_ID, "text": "⚠️ *Video ini tidak memiliki Heatmap.*\nSilakan balas pesan ini dengan mengetik durasi manual (Contoh: `00:05:00-00:06:00`).", "parse_mode": "Markdown"})
+                data={"chat_id": CHAT_ID, "message_id": MSG_ID, "text": "⚠️ *Video ini tidak memiliki Heatmap.*\\nSilakan balas pesan ini dengan mengetik durasi manual (Contoh: `00:05:00-00:06:00`).", "parse_mode": "Markdown"})
             return
 
         # ==========================================================
-        # TUGAS 2: RENDER VIDEO (Berat & AI)
+        # TUGAS 2: RENDER VIDEO
         # ==========================================================
         elif TASK_TYPE == "render":
             edit_msg("Menyiapkan Mesin Render & AI...", 10)
@@ -252,7 +251,7 @@ def handle_peak_selection(call):
         bot.answer_callback_query(call.id, "⚠️ Sesi kadaluarsa. Kirim ulang link.", show_alert=True)
         return
         
-    data = call.data.split('_') # peak_120_180
+    data = call.data.split('_')
     s_time, e_time = int(data[1]), int(data[2])
     manual_time_str = f"{fmt_t(s_time)}-{fmt_t(e_time)}"
     
@@ -288,7 +287,7 @@ def dispatch_kaggle_task(chat_id, msg_id, task_type, manual_time):
     try:
         subprocess.run(["kaggle", "kernels", "push", "-p", "kaggle_task"], check=True)
         if task_type == "render":
-            del user_states[chat_id] # Bersihkan memori Koyeb jika sudah masuk tahap render
+            del user_states[chat_id] 
     except Exception:
         bot.edit_message_text("❌ Gagal terhubung ke Cloud Engine.", chat_id=chat_id, message_id=msg_id)
 
