@@ -8,6 +8,7 @@ from threading import Thread
 import logging
 import time
 from datetime import datetime
+from kaggle.api.kaggle_api_extended import KaggleApi
 
 # --- MENGHENINGKAN LOG KOYEB ---
 log = logging.getLogger('werkzeug')
@@ -18,6 +19,11 @@ ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID", 0))
 KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME")
 
 bot = telebot.TeleBot(TOKEN)
+
+# Inisialisasi Kaggle Python API (Untuk fitur Auto-Delete)
+api = KaggleApi()
+api.authenticate()
+
 user_states = {}
 
 def fmt_t(seconds):
@@ -114,18 +120,17 @@ def main_process():
     edit_msg("Menyiapkan Mesin Cloud & AI...", 10)
     
     if FACE_POS in ['auto', 'br', 'bl', 'tr', 'tl']:
-        run_cmd('pip install -q --upgrade yt-dlp opencv-python-headless mediapipe numpy')
+        run_cmd("pip install -q --upgrade yt-dlp opencv-python-headless mediapipe numpy")
     else:
-        run_cmd('pip install -q --upgrade yt-dlp')
+        run_cmd("pip install -q --upgrade yt-dlp")
 
-    # ALUR 1: MANUAL TIME (KICK/M3U8 atau YOUTUBE MANUAL)
+    # KARENA URL SUDAH LANGSUNG MENUJU CDN (MASTER.M3U8) ATAU YOUTUBE NORMAL,
+    # KITA TIDAK PERLU IMPERSONATE LAGI.
     if MANUAL_TIME != "none":
         edit_msg(f"Mengunduh cuplikan [{MANUAL_TIME}]...", 30)
-        # Hapus impersonate karena m3u8 langsung ditembak oleh yt-dlp/ffmpeg tanpa Cloudflare
         dl_cmd = f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{MANUAL_TIME}" --force-keyframes-at-cuts -o "input.mp4" "{URL}"'
         run_cmd(dl_cmd)
 
-    # ALUR 2: AUTO HEATMAP (KHUSUS YOUTUBE)
     else:
         edit_msg("Memindai Grafik YouTube (Mencari Top 5)...", 20)
         try:
@@ -167,9 +172,6 @@ def main_process():
             edit_msg("Gagal baca Heatmap. Mengunduh 1 menit pertama...", 40)
             run_cmd(f'yt-dlp -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
 
-    # ===============================
-    # TAHAP ANALISIS & RENDER VIDEO
-    # ===============================
     if FACE_POS == "pad": mode, data = "pad", None
     elif FACE_POS in ['auto', 'br', 'bl', 'tr', 'tl']:
         edit_msg("AI memindai tata letak objek...", 60)
@@ -211,53 +213,61 @@ except Exception as e:
         data={"chat_id": CHAT_ID, "message_id": MSG_ID, "text": f"❌ Terjadi Kesalahan Sistem:\n\n{safe_error}"})
 """
 
-# --- 3. ALUR BOT TELEGRAM ---
+# --- 3. ALUR BOT TELEGRAM & AUTO DELETE API ---
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     if message.chat.id != ALLOWED_USER_ID: return
     
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🟥 YouTube", callback_data="plat_yt"),
-               InlineKeyboardButton("🟩 Kick (m3u8)", callback_data="plat_kick"))
-    
-    # Hapus state agar sesi bersih
-    if message.chat.id in user_states: del user_states[message.chat.id]
-    
-    bot.reply_to(message, "🤖 *Pabrik Video Aktif!*\n\nSilakan pilih sumber platform video Anda di bawah ini:", reply_markup=markup, parse_mode="Markdown")
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("📺 YouTube", callback_data="platform_youtube"),
+        InlineKeyboardButton("🟢 Kick (VOD)", callback_data="platform_kick")
+    )
+    bot.reply_to(message, "🤖 *Pabrik Video Aktif!*\n\nSilakan pilih platform sumber video:", reply_markup=markup, parse_mode="Markdown")
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('plat_'))
-def handle_platform(call):
+@bot.callback_query_handler(func=lambda call: call.data.startswith('platform_'))
+def handle_platform_selection(call):
     chat_id = call.message.chat.id
-    plat = call.data.replace('plat_', '')
+    platform = call.data.replace('platform_', '')
     
-    user_states[chat_id] = {'platform': plat, 'step': 'wait_url'}
-    
-    if plat == 'yt':
-        msg_text = "📺 *Mode YouTube*\n\nSilakan kirimkan link YouTube (Contoh: `https://youtu.be/...`)."
-    else:
-        msg_text = "🟩 *Mode Kick*\n\nSilakan kirimkan link **master.m3u8** dari Kick.\n_(Cara: Buka Kick di Chrome Laptop > Tekan F12 > Network > Cari 'm3u8' > Copy link)_"
-        
-    bot.edit_message_text(msg_text, chat_id=chat_id, message_id=call.message.message_id, parse_mode="Markdown")
+    # Cek apakah sedang ada proses berjalan
+    if chat_id in user_states and user_states[chat_id].get('status') == 'processing':
+        bot.answer_callback_query(call.id, "⏳ Harap tunggu proses sebelumnya selesai!", show_alert=True)
+        return
+
+    if platform == "youtube":
+        user_states[chat_id] = {'platform': 'youtube', 'status': 'waiting_url'}
+        bot.edit_message_text("📺 *Mode YouTube*\nSilakan kirimkan link YouTube yang valid.", chat_id=chat_id, message_id=call.message.message_id, parse_mode="Markdown")
+    elif platform == "kick":
+        user_states[chat_id] = {'platform': 'kick', 'status': 'waiting_url'}
+        bot.edit_message_text("🟢 *Mode Kick*\nSilakan kirimkan URL `master.m3u8` yang Anda dapatkan dari Developer Tools (F12).", chat_id=chat_id, message_id=call.message.message_id, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: message.text.strip().startswith("http"))
 def handle_url(message):
     chat_id = message.chat.id
     if chat_id != ALLOWED_USER_ID: return
     
-    if chat_id not in user_states or user_states[chat_id].get('step') != 'wait_url':
-        bot.reply_to(message, "⚠️ Tolong tekan `/start` terlebih dahulu untuk memulai sesi baru.", parse_mode="Markdown")
+    # Jika belum klik /start atau tidak ada state
+    if chat_id not in user_states or user_states[chat_id].get('status') not in ['waiting_url', 'waiting_layout']:
+        bot.reply_to(message, "⚠️ Silakan ketik /start dan pilih platform terlebih dahulu.")
+        return
+
+    url = message.text.strip().split()[0]
+    platform = user_states[chat_id].get('platform')
+
+    # VALIDASI KETAT YOUTUBE
+    if platform == "youtube" and not any(domain in url.lower() for domain in ['youtube.com', 'youtu.be']):
+        bot.reply_to(message, "❌ Link salah! Kirimkan link YouTube, atau ulangi /start untuk mengganti platform.")
         return
         
-    url = message.text.strip().split()[0]
-    plat = user_states[chat_id]['platform']
-    
-    if plat == 'kick' and 'm3u8' not in url.lower():
-        bot.reply_to(message, "❌ Link salah! Untuk Kick, Anda harus mengirim link yang berakhiran **.m3u8**", parse_mode="Markdown")
+    # VALIDASI KETAT KICK M3U8
+    if platform == "kick" and "master.m3u8" not in url.lower():
+        bot.reply_to(message, "❌ Link salah! Anda berada di Mode Kick. Anda HARUS mengirimkan link berekstensi `master.m3u8`.")
         return
 
     user_states[chat_id]['url'] = url
-    user_states[chat_id]['step'] = 'wait_mode'
+    user_states[chat_id]['status'] = 'waiting_layout'
 
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -272,36 +282,33 @@ def handle_url(message):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('mode_'))
 def handle_mode_selection(call):
     chat_id = call.message.chat.id
-    if chat_id not in user_states or user_states[chat_id].get('step') != 'wait_mode': return
+    if chat_id not in user_states: return
 
     user_states[chat_id]['mode'] = call.data.replace('mode_', '')
-    user_states[chat_id]['step'] = 'wait_time'
-    plat = user_states[chat_id]['platform']
+    platform = user_states[chat_id].get('platform')
     
     markup = InlineKeyboardMarkup()
-    if plat == 'yt':
+    if platform == "youtube":
         markup.add(InlineKeyboardButton("🚀 Proses Auto Viral", callback_data="run_auto"))
         msg_text = "⏱️ *Langkah 2: Pilih Durasi Waktu*\n\nKlik tombol *Proses Auto* untuk memotong momen teramai, *ATAU* ketik langsung durasi manual di chat ini (Contoh: `01:10:00-01:11:00`)."
     else:
-        msg_text = "⏱️ *Langkah 2: Masukkan Durasi Manual*\n\nKarena ini adalah file `m3u8`, fitur Auto-Viral tidak tersedia.\n\nKetik langsung rentang waktu video di chat ini untuk dipotong (Contoh: `01:10:00-01:11:00`)."
+        msg_text = "⏱️ *Langkah 2: Masukkan Durasi Manual*\n\nSilakan ketik langsung rentang waktu video di chat ini untuk dipotong (Contoh: `01:10:00-01:11:00`)."
     
     bot.edit_message_text(text=msg_text, chat_id=chat_id, message_id=call.message.message_id, 
-                          reply_markup=markup if plat == 'yt' else None, parse_mode="Markdown")
+                          reply_markup=markup if platform == "youtube" else None, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data == 'run_auto')
 def trigger_auto_run(call):
     chat_id = call.message.chat.id
-    if chat_id not in user_states or user_states[chat_id].get('step') != 'wait_time': return
+    if chat_id not in user_states: return
         
     msg = bot.edit_message_text("[░░░░░░░░░░] 0% - Mengirim tugas ke Mesin Cloud...", 
                           chat_id=chat_id, message_id=call.message.message_id)
     dispatch_kaggle_task(chat_id, msg.message_id, manual_time="none")
 
-@bot.message_handler(func=lambda message: "-" in message.text and ":" in message.text)
+@bot.message_handler(func=lambda message: "-" in message.text and message.chat.id in user_states and 'mode' in user_states[message.chat.id])
 def handle_manual_time(message):
     chat_id = message.chat.id
-    if chat_id not in user_states or user_states[chat_id].get('step') != 'wait_time': return
-    
     manual_time = message.text.strip()
     msg = bot.send_message(chat_id, "[░░░░░░░░░░] 0% - Mengirim tugas manual ke Mesin Cloud...")
     dispatch_kaggle_task(chat_id, msg.message_id, manual_time=manual_time)
@@ -314,11 +321,21 @@ def monitor_kaggle_task(chat_id, slug_id):
             res = subprocess.check_output(["kaggle", "kernels", "status", f"{KAGGLE_USERNAME}/{slug_id}"], text=True)
             if any(x in res.lower() for x in ["complete", "error", "cancel"]):
                 if chat_id in user_states: del user_states[chat_id]
+                
+                # PENGHANCURAN OTOMATIS MENGGUNAKAN PYTHON API (BUKAN CLI)
+                try:
+                    api.kernel_delete(KAGGLE_USERNAME, slug_id)
+                    print(f"✅ Kaggle Task {slug_id} berhasil dihancurkan dari server.")
+                except Exception as e:
+                    print(f"⚠️ Gagal menghapus task via API: {str(e)}")
                 break
         except Exception:
             fail_count += 1
             if fail_count >= 15:
                 if chat_id in user_states: del user_states[chat_id]
+                try:
+                    api.kernel_delete(KAGGLE_USERNAME, slug_id)
+                except: pass
                 break
 
 def dispatch_kaggle_task(chat_id, msg_id, manual_time):
@@ -326,7 +343,7 @@ def dispatch_kaggle_task(chat_id, msg_id, manual_time):
     url = state.get('url', '')
     face_pos = state.get('mode', 'auto')
     
-    user_states[chat_id]['step'] = 'processing'
+    user_states[chat_id]['status'] = 'processing'
     
     os.makedirs("kaggle_task", exist_ok=True)
     worker_vars = f'URL = "{url}"\nCHAT_ID = "{chat_id}"\nMSG_ID = "{msg_id}"\nBOT_TOKEN = "{TOKEN}"\nMANUAL_TIME = "{manual_time}"\nFACE_POS = "{face_pos}"\n'
@@ -346,7 +363,7 @@ def dispatch_kaggle_task(chat_id, msg_id, manual_time):
         Thread(target=monitor_kaggle_task, args=(chat_id, slug_id)).start()
     except Exception:
         bot.edit_message_text("❌ Gagal terhubung ke Cloud Engine.", chat_id=chat_id, message_id=msg_id)
-        del user_states[chat_id]
+        if chat_id in user_states: del user_states[chat_id]
 
 # --- 4. WEB SERVER ---
 app = Flask(__name__)
