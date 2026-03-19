@@ -13,7 +13,7 @@ KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME")
 
 bot = telebot.TeleBot(TOKEN)
 
-# --- 2. KODE PEKERJA KAGGLE (BUG FIX FFMPEG) ---
+# --- 2. KODE PEKERJA KAGGLE (DENGAN TARGETED AI) ---
 KAGGLE_WORKER_CODE = """
 import os
 import subprocess
@@ -26,10 +26,9 @@ def send_telegram_msg(text):
     url_api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     requests.post(url_api, data={"chat_id": CHAT_ID, "text": text})
 
-def analyze_video(video_path):
+def analyze_video(video_path, requested_pos):
     import cv2
     import numpy as np
-    
     importlib.invalidate_caches()
     
     cap = cv2.VideoCapture(video_path)
@@ -39,7 +38,6 @@ def analyze_video(video_path):
 
     try:
         from mediapipe.python.solutions import face_detection as mp_faces
-        
         with mp_faces.FaceDetection(model_selection=1, min_detection_confidence=0.4) as face_detection:
             for i in range(15):
                 cap.set(cv2.CAP_PROP_POS_FRAMES, i * step)
@@ -48,57 +46,85 @@ def analyze_video(video_path):
                 
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 results = face_detection.process(rgb_frame)
-                
                 if results.detections:
                     for detection in results.detections:
                         bbox = detection.location_data.relative_bounding_box
-                        face_boxes.append((bbox.xmin, bbox.ymin, bbox.width, bbox.height))
-                        break
+                        x, y, w, h = bbox.xmin, bbox.ymin, bbox.width, bbox.height
+                        if 0.01 < w * h < 0.8:
+                            face_boxes.append((x, y, w, h))
     except Exception as e:
-        send_telegram_msg("⚠️ Mengalihkan ke sistem Mata AI Cadangan (OpenCV)...")
+        send_telegram_msg("⚠️ Beralih ke Mata AI Cadangan (OpenCV)...")
         face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         for i in range(15):
             cap.set(cv2.CAP_PROP_POS_FRAMES, i * step)
             ret, frame = cap.read()
             if not ret: break
-            
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             faces = face_cascade.detectMultiScale(gray, 1.1, 4)
-            if len(faces) > 0:
-                x, y, w, h = faces[0]
+            for (x, y, w, h) in faces:
                 ih, iw, _ = frame.shape
                 face_boxes.append((x/iw, y/ih, w/iw, h/ih))
-                break
 
     cap.release()
 
     if not face_boxes:
         return "irl", 0.5 
 
-    avg_box = np.mean(face_boxes, axis=0)
-    xmin, ymin, w, h = avg_box
-    face_center_x = xmin + (w / 2)
-    
-    if w * h > 0.15:
-        return "irl", face_center_x
+    # --- LOGIKA TARGETED AI (JIKA PENGGUNA INPUT MANUAL POSISI) ---
+    if requested_pos in ['br', 'bl', 'tr', 'tl']:
+        target_faces = []
+        for (x, y, w, h) in face_boxes:
+            cx, cy = x + w/2, y + h/2
+            if requested_pos == 'br' and cx >= 0.5 and cy >= 0.5: target_faces.append((x,y,w,h))
+            elif requested_pos == 'bl' and cx <= 0.5 and cy >= 0.5: target_faces.append((x,y,w,h))
+            elif requested_pos == 'tr' and cx >= 0.5 and cy <= 0.5: target_faces.append((x,y,w,h))
+            elif requested_pos == 'tl' and cx <= 0.5 and cy <= 0.5: target_faces.append((x,y,w,h))
+            
+        if target_faces:
+            avg_box = np.mean(target_faces, axis=0)
+            xmin, ymin, w, h = avg_box
+            c_w, c_h = min(1.0, w * 2.5), min(1.0, h * 2.5)
+            c_x, c_y = max(0.0, xmin - (c_w - w)/2), max(0.0, ymin - (c_h - h)/2)
+            if c_x + c_w > 1.0: c_x = 1.0 - c_w
+            if c_y + c_h > 1.0: c_y = 1.0 - c_h
+            return "split_dynamic", (c_x, c_y, c_w, c_h)
+        else:
+            return "split_static", requested_pos # Wajah tidak ketemu di pojok itu, pakai potongan kasar (failsafe)
 
-    c_w = min(1.0, w * 2.5)
-    c_h = min(1.0, h * 2.5)
-    c_x = max(0.0, xmin - (c_w - w)/2)
-    c_y = max(0.0, ymin - (c_h - h)/2)
-    
-    if c_x + c_w > 1.0: c_x = 1.0 - c_w
-    if c_y + c_h > 1.0: c_y = 1.0 - c_h
-    
-    return "split", (c_x, c_y, c_w, c_h)
+    # --- LOGIKA FULL AUTO SMART ZONE (JIKA TANPA INPUT MANUAL) ---
+    corner_faces, center_faces = [], []
+    for (x, y, w, h) in face_boxes:
+        cx, cy = x + w/2, y + h/2
+        if cx < 0.25 or cx > 0.75 or cy < 0.25 or cy > 0.75: corner_faces.append((x, y, w, h))
+        else: center_faces.append((x, y, w, h))
+
+    if corner_faces:
+        avg_box = np.mean(corner_faces, axis=0)
+        xmin, ymin, w, h = avg_box
+        if w * h > 0.15: return "irl", xmin + w/2
+        c_w, c_h = min(1.0, w * 2.5), min(1.0, h * 2.5)
+        c_x, c_y = max(0.0, xmin - (c_w - w)/2), max(0.0, ymin - (c_h - h)/2)
+        if c_x + c_w > 1.0: c_x = 1.0 - c_w
+        if c_y + c_h > 1.0: c_y = 1.0 - c_h
+        return "split_dynamic", (c_x, c_y, c_w, c_h)
+    elif center_faces:
+        avg_box = np.mean(center_faces, axis=0)
+        xmin, ymin, w, h = avg_box
+        return "irl", xmin + w/2
+    else:
+        return "irl", 0.5
 
 def run_worker():
     try:
-        send_telegram_msg("⚙️ Memulai AI: Instalasi sistem dan menyegarkan memori...")
-        subprocess.run("pip install -q --upgrade yt-dlp opencv-python-headless mediapipe numpy", shell=True, check=True)
-        
+        if FACE_POS in ['auto', 'br', 'bl', 'tr', 'tl']:
+            send_telegram_msg("⚙️ Memulai Mesin AI: Instalasi sistem dan menyegarkan memori...")
+            subprocess.run("pip install -q --upgrade yt-dlp opencv-python-headless mediapipe numpy", shell=True, check=True)
+        else:
+            send_telegram_msg(f"⚙️ Mode Bypass Paksa '{FACE_POS.upper()}' Aktif...")
+            subprocess.run("pip install -q --upgrade yt-dlp", shell=True, check=True)
+            
         if MANUAL_TIME != "none":
-            send_telegram_msg(f"⏱️ Mode Manual Aktif! Memotong durasi: {MANUAL_TIME}")
+            send_telegram_msg(f"⏱️ Memotong pada durasi: {MANUAL_TIME}")
             download_section = f'--download-sections "*{MANUAL_TIME}"'
         else:
             send_telegram_msg("🔍 Memindai Heatmap YouTube...")
@@ -107,7 +133,6 @@ def run_worker():
                 info_json = subprocess.check_output(info_cmd, shell=True, text=True)
                 info = json.loads(info_json)
                 heatmap = info.get('heatmap')
-                
                 if heatmap:
                     heatmap_sorted = sorted(heatmap, key=lambda x: x.get('value', 0), reverse=True)
                     top_peaks = []
@@ -124,9 +149,7 @@ def run_worker():
                         send_telegram_msg(msg)
                         
                         peak_time = top_peaks[0]
-                        start_time = max(0, peak_time - 30)
-                        end_time = start_time + 60
-                        
+                        start_time, end_time = max(0, peak_time - 30), max(0, peak_time - 30) + 60
                         mins_s, secs_s = divmod(start_time, 60)
                         mins_e, secs_e = divmod(end_time, 60)
                         send_telegram_msg(f"✂️ Mengambil Juara 1: {mins_s:02d}:{secs_s:02d} - {mins_e:02d}:{secs_e:02d}")
@@ -143,18 +166,28 @@ def run_worker():
         download_cmd = f'yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" {download_section} -o "input.mp4" {URL}'
         subprocess.run(download_cmd, shell=True, check=True)
         
-        send_telegram_msg("🧠 Mata AI sedang memindai tata letak layar...")
-        mode, data = analyze_video("input.mp4")
-        
-        if mode == "irl":
+        # --- PENENTUAN MODE CROP ---
+        if FACE_POS in ['auto', 'br', 'bl', 'tr', 'tl']:
+            send_telegram_msg(f"🧠 AI memindai tata letak (Mode: {FACE_POS.upper()})...")
+            mode, data = analyze_video("input.mp4", FACE_POS)
+        else:
+            mode = "irl"
+            data = "bypass" # Khusus kalau inputnya 'irl' untuk bypass potong tengah
+
+        # --- EKSEKUSI FFMPEG ---
+        if mode == "irl" and FACE_POS == "auto":
             face_x = data
-            send_telegram_msg("👤 Mode: IRL Stream (Smart Tracking Center)")
-            # BUG FIX: FFmpeg otomatis menjaga batas crop, kita hapus fungsi koma (max/min)
+            send_telegram_msg("👤 AI: IRL Stream / Podcast (Smart Center)")
             x_expr = f"iw*{face_x} - ow/2"
             ffmpeg_cmd = f'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih:{x_expr}:0" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
-        else:
+            
+        elif mode == "irl" and FACE_POS == "irl":
+            send_telegram_msg("👤 Manual: Memaksa potong vertikal tengah layar (Bypass AI)")
+            ffmpeg_cmd = 'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
+            
+        elif mode == "split_dynamic":
             c_x, c_y, c_w, c_h = data
-            send_telegram_msg("🎮 Mode: Gameplay + Facecam (Auto Crop Layout)")
+            send_telegram_msg("🎮 AI: Split Screen dengan ukuran wajah yang disesuaikan presisi!")
             filter_complex = (
                 f"[0:v]crop=ih*0.9:ih:(iw-ow)/2:0,scale=1080:1200[top]; "
                 f"[0:v]crop=iw*{c_w}:ih*{c_h}:iw*{c_x}:ih*{c_y},scale=1080:720:force_original_aspect_ratio=increase,crop=1080:720[bottom]; "
@@ -162,12 +195,25 @@ def run_worker():
             )
             ffmpeg_cmd = f'ffmpeg -i input.mp4 -filter_complex "{filter_complex}" -map "[outv]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
             
+        elif mode == "split_static":
+            send_telegram_msg(f"⚠️ AI tidak melihat wajah di pojok {data.upper()}. Menggunakan ukuran facecam kasar (Failsafe)...")
+            if data == "br": face_pos_str = "iw-ow:ih-oh"
+            elif data == "bl": face_pos_str = "0:ih-oh"
+            elif data == "tr": face_pos_str = "iw-ow:0"
+            elif data == "tl": face_pos_str = "0:0"
+            filter_complex = (
+                f"[0:v]crop=ih*0.9:ih:(iw-ow)/2:0,scale=1080:1200[top]; "
+                f"[0:v]crop=ih*0.5:ih*0.333:{face_pos_str},scale=1080:720[bottom]; "
+                f"[top][bottom]vstack[outv]"
+            )
+            ffmpeg_cmd = f'ffmpeg -i input.mp4 -filter_complex "{filter_complex}" -map "[outv]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
+            
         subprocess.run(ffmpeg_cmd, shell=True, check=True)
         
-        send_telegram_msg("🚀 Selesai! Mengirim video Mahakarya AI ke Anda...")
+        send_telegram_msg("🚀 Selesai! Mengirim video ke Anda...")
         with open('output.mp4', 'rb') as video_file:
             url_api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo"
-            requests.post(url_api, data={"chat_id": CHAT_ID, "caption": "✅ Video diproses dengan Computer Vision!"}, files={"video": video_file})
+            requests.post(url_api, data={"chat_id": CHAT_ID, "caption": "✅ Video AI berhasil diproses!"}, files={"video": video_file})
             
     except Exception as e:
         error_trace = traceback.format_exc()
@@ -183,12 +229,16 @@ def send_welcome(message):
     pesan_bantuan = (
         "🤖 *Bot YouTube Clipper AI*\n\n"
         "Kirim link YouTube, dan biarkan AI yang berpikir!\n\n"
-        "🧠 *Fitur Otomatis:*\n"
-        "✅ Auto Heatmap (Mencari momen viral)\n"
-        "✅ Auto Face Detect (Membedakan IRL dan Gameplay)\n"
-        "✅ Auto Resize Facecam\n\n"
-        "🛠️ *Contoh Manual Cut (Opsional):*\n"
-        "`https://youtu.be/xyz 05:10-06:05`"
+        "🛠️ *Kode Perintah Tambahan (Opsional):*\n"
+        "Ketik kode ini setelah URL jika AI salah tebak:\n"
+        "`irl` = Paksa potong tengah (Tanpa Facecam)\n"
+        "`br`  = Paksa AI Fokus di Kanan Bawah\n"
+        "`bl`  = Paksa AI Fokus di Kiri Bawah\n"
+        "`tr`  = Paksa AI Fokus di Kanan Atas\n"
+        "`tl`  = Paksa AI Fokus di Kiri Atas\n\n"
+        "⏱️ *Manual Cut:*\n"
+        "`05:10-06:05`\n\n"
+        "Contoh gabungan: `https://youtu.be/xyz br 10:00-11:00`"
     )
     bot.reply_to(message, pesan_bantuan, parse_mode="Markdown")
 
@@ -203,10 +253,18 @@ def handle_youtube_link(message):
         return bot.reply_to(message, "⚠️ Mohon kirimkan link YouTube yang valid.")
 
     manual_time = "none"
-    if len(args) > 1 and "-" in args[1]:
-        manual_time = args[1]
+    face_pos = "auto"
+    
+    for arg in args[1:]:
+        if arg.lower() in ['br', 'bl', 'tr', 'tl', 'irl']:
+            face_pos = arg.lower()
+        elif "-" in arg and (":" in arg or arg.replace("-", "").isdigit()):
+            manual_time = arg
 
-    bot.reply_to(message, f"⏳ Link diterima!\nMode Wajah: 🤖 100% Otomatis (Computer Vision)\nWaktu: {'Otomatis (Heatmap)' if manual_time == 'none' else manual_time}\nMengirim ke Kaggle...")
+    info_mode = "🤖 100% Otomatis" if face_pos == "auto" else f"🎯 AI Fokus Area ({face_pos.upper()})"
+    info_time = "Otomatis (Heatmap)" if manual_time == "none" else manual_time
+    
+    bot.reply_to(message, f"⏳ Link diterima!\nMode Wajah: {info_mode}\nWaktu: {info_time}\nMengirim ke Kaggle...")
 
     os.makedirs("kaggle_task", exist_ok=True)
 
@@ -215,6 +273,7 @@ URL = "{url}"
 CHAT_ID = "{message.chat.id}"
 BOT_TOKEN = "{TOKEN}"
 MANUAL_TIME = "{manual_time}"
+FACE_POS = "{face_pos}"
 """
     script_content = worker_vars + KAGGLE_WORKER_CODE
     
