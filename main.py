@@ -13,7 +13,7 @@ KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME")
 
 bot = telebot.TeleBot(TOKEN)
 
-# --- 2. KODE PEKERJA KAGGLE (DENGAN TARGETED AI) ---
+# --- 2. KODE PEKERJA KAGGLE (BUG FIX UNBOUND LOCAL ERROR) ---
 KAGGLE_WORKER_CODE = """
 import os
 import subprocess
@@ -67,10 +67,15 @@ def analyze_video(video_path, requested_pos):
 
     cap.release()
 
+    # PERBAIKAN: Jika wajah tidak ditemukan sama sekali
     if not face_boxes:
+        # Jika user sudah maksa posisi, pakai posisi tersebut (Static Failsafe)
+        if requested_pos in ['br', 'bl', 'tr', 'tl']:
+            return "split_static", requested_pos
+        # Jika auto, kembalikan ke IRL potong tengah
         return "irl", 0.5 
 
-    # --- LOGIKA TARGETED AI (JIKA PENGGUNA INPUT MANUAL POSISI) ---
+    # --- LOGIKA TARGETED AI ---
     if requested_pos in ['br', 'bl', 'tr', 'tl']:
         target_faces = []
         for (x, y, w, h) in face_boxes:
@@ -89,9 +94,9 @@ def analyze_video(video_path, requested_pos):
             if c_y + c_h > 1.0: c_y = 1.0 - c_h
             return "split_dynamic", (c_x, c_y, c_w, c_h)
         else:
-            return "split_static", requested_pos # Wajah tidak ketemu di pojok itu, pakai potongan kasar (failsafe)
+            return "split_static", requested_pos
 
-    # --- LOGIKA FULL AUTO SMART ZONE (JIKA TANPA INPUT MANUAL) ---
+    # --- LOGIKA FULL AUTO ---
     corner_faces, center_faces = [], []
     for (x, y, w, h) in face_boxes:
         cx, cy = x + w/2, y + h/2
@@ -172,22 +177,12 @@ def run_worker():
             mode, data = analyze_video("input.mp4", FACE_POS)
         else:
             mode = "irl"
-            data = "bypass" # Khusus kalau inputnya 'irl' untuk bypass potong tengah
+            data = "bypass" 
 
-        # --- EKSEKUSI FFMPEG ---
-        if mode == "irl" and FACE_POS == "auto":
-            face_x = data
-            send_telegram_msg("👤 AI: IRL Stream / Podcast (Smart Center)")
-            x_expr = f"iw*{face_x} - ow/2"
-            ffmpeg_cmd = f'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih:{x_expr}:0" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
-            
-        elif mode == "irl" and FACE_POS == "irl":
-            send_telegram_msg("👤 Manual: Memaksa potong vertikal tengah layar (Bypass AI)")
-            ffmpeg_cmd = 'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
-            
-        elif mode == "split_dynamic":
+        # --- EKSEKUSI FFMPEG (DENGAN UNIVERSAL FAILSAFE) ---
+        if mode == "split_dynamic":
             c_x, c_y, c_w, c_h = data
-            send_telegram_msg("🎮 AI: Split Screen dengan ukuran wajah yang disesuaikan presisi!")
+            send_telegram_msg("🎮 AI: Split Screen dengan ukuran wajah presisi!")
             filter_complex = (
                 f"[0:v]crop=ih*0.9:ih:(iw-ow)/2:0,scale=1080:1200[top]; "
                 f"[0:v]crop=iw*{c_w}:ih*{c_h}:iw*{c_x}:ih*{c_y},scale=1080:720:force_original_aspect_ratio=increase,crop=1080:720[bottom]; "
@@ -196,7 +191,7 @@ def run_worker():
             ffmpeg_cmd = f'ffmpeg -i input.mp4 -filter_complex "{filter_complex}" -map "[outv]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
             
         elif mode == "split_static":
-            send_telegram_msg(f"⚠️ AI tidak melihat wajah di pojok {data.upper()}. Menggunakan ukuran facecam kasar (Failsafe)...")
+            send_telegram_msg(f"⚠️ Menggunakan ukuran Facecam Kasar di posisi {data.upper()} (Failsafe)...")
             if data == "br": face_pos_str = "iw-ow:ih-oh"
             elif data == "bl": face_pos_str = "0:ih-oh"
             elif data == "tr": face_pos_str = "iw-ow:0"
@@ -207,6 +202,17 @@ def run_worker():
                 f"[top][bottom]vstack[outv]"
             )
             ffmpeg_cmd = f'ffmpeg -i input.mp4 -filter_complex "{filter_complex}" -map "[outv]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
+            
+        elif mode == "irl" and FACE_POS == "irl":
+            send_telegram_msg("👤 Manual: Memaksa potong vertikal tengah layar (Bypass AI)")
+            ffmpeg_cmd = 'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
+            
+        else:
+            # UNIVERSAL FAILSAFE: Apa pun yang terjadi, perintah ini akan menyelematkan video
+            face_x = data if isinstance(data, (float, int)) else 0.5
+            send_telegram_msg("👤 AI/Fallback: Memotong area tengah layar (Smart Center/Default)")
+            x_expr = f"iw*{face_x} - ow/2"
+            ffmpeg_cmd = f'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih:{x_expr}:0" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
             
         subprocess.run(ffmpeg_cmd, shell=True, check=True)
         
