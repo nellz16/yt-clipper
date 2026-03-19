@@ -13,7 +13,7 @@ KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME")
 
 bot = telebot.TeleBot(TOKEN)
 
-# --- 2. KODE PEKERJA KAGGLE (BUG FIX UNBOUND LOCAL ERROR) ---
+# --- 2. KODE PEKERJA KAGGLE (DENGAN GIANT FACECAM 50/50) ---
 KAGGLE_WORKER_CODE = """
 import os
 import subprocess
@@ -67,15 +67,29 @@ def analyze_video(video_path, requested_pos):
 
     cap.release()
 
-    # PERBAIKAN: Jika wajah tidak ditemukan sama sekali
     if not face_boxes:
-        # Jika user sudah maksa posisi, pakai posisi tersebut (Static Failsafe)
-        if requested_pos in ['br', 'bl', 'tr', 'tl']:
-            return "split_static", requested_pos
-        # Jika auto, kembalikan ke IRL potong tengah
+        if requested_pos in ['br', 'bl', 'tr', 'tl']: return "split_static", requested_pos
         return "irl", 0.5 
 
-    # --- LOGIKA TARGETED AI ---
+    # --- LOGIKA PENENTU UKURAN FACECAM (BESAR vs KECIL) ---
+    def calculate_crop_box(target_faces):
+        avg_box = np.mean(target_faces, axis=0)
+        xmin, ymin, w, h = avg_box
+        
+        # Jika luas area wajah > 4% layar, berarti facecam-nya raksasa (seperti IShowSpeed)
+        is_giant = (w * h) > 0.04 
+        
+        # Beri padding (ruang) lebih banyak jika giant facecam agar badan/kursi masuk
+        multiplier = 3.5 if is_giant else 2.5
+        c_w, c_h = min(1.0, w * multiplier), min(1.0, h * multiplier)
+        c_x, c_y = max(0.0, xmin - (c_w - w)/2), max(0.0, ymin - (c_h - h)/2)
+        
+        if c_x + c_w > 1.0: c_x = 1.0 - c_w
+        if c_y + c_h > 1.0: c_y = 1.0 - c_h
+        
+        return ("split_giant" if is_giant else "split_dynamic"), (c_x, c_y, c_w, c_h)
+
+    # --- TARGETED AI ---
     if requested_pos in ['br', 'bl', 'tr', 'tl']:
         target_faces = []
         for (x, y, w, h) in face_boxes:
@@ -85,18 +99,10 @@ def analyze_video(video_path, requested_pos):
             elif requested_pos == 'tr' and cx >= 0.5 and cy <= 0.5: target_faces.append((x,y,w,h))
             elif requested_pos == 'tl' and cx <= 0.5 and cy <= 0.5: target_faces.append((x,y,w,h))
             
-        if target_faces:
-            avg_box = np.mean(target_faces, axis=0)
-            xmin, ymin, w, h = avg_box
-            c_w, c_h = min(1.0, w * 2.5), min(1.0, h * 2.5)
-            c_x, c_y = max(0.0, xmin - (c_w - w)/2), max(0.0, ymin - (c_h - h)/2)
-            if c_x + c_w > 1.0: c_x = 1.0 - c_w
-            if c_y + c_h > 1.0: c_y = 1.0 - c_h
-            return "split_dynamic", (c_x, c_y, c_w, c_h)
-        else:
-            return "split_static", requested_pos
+        if target_faces: return calculate_crop_box(target_faces)
+        else: return "split_static", requested_pos
 
-    # --- LOGIKA FULL AUTO ---
+    # --- FULL AUTO SMART ZONE ---
     corner_faces, center_faces = [], []
     for (x, y, w, h) in face_boxes:
         cx, cy = x + w/2, y + h/2
@@ -104,14 +110,7 @@ def analyze_video(video_path, requested_pos):
         else: center_faces.append((x, y, w, h))
 
     if corner_faces:
-        avg_box = np.mean(corner_faces, axis=0)
-        xmin, ymin, w, h = avg_box
-        if w * h > 0.15: return "irl", xmin + w/2
-        c_w, c_h = min(1.0, w * 2.5), min(1.0, h * 2.5)
-        c_x, c_y = max(0.0, xmin - (c_w - w)/2), max(0.0, ymin - (c_h - h)/2)
-        if c_x + c_w > 1.0: c_x = 1.0 - c_w
-        if c_y + c_h > 1.0: c_y = 1.0 - c_h
-        return "split_dynamic", (c_x, c_y, c_w, c_h)
+        return calculate_crop_box(corner_faces)
     elif center_faces:
         avg_box = np.mean(center_faces, axis=0)
         xmin, ymin, w, h = avg_box
@@ -145,44 +144,43 @@ def run_worker():
                         p_time = int(p.get('start_time', 0))
                         if all(abs(p_time - existing) > 60 for existing in top_peaks): top_peaks.append(p_time)
                         if len(top_peaks) >= 3: break
-                    
                     if top_peaks:
-                        msg = "🔥 Top 3 Momen Viral:\\n"
-                        for i, t in enumerate(top_peaks, 1):
-                            mins, secs = divmod(t, 60)
-                            msg += f"{i}. Menit {mins:02d}:{secs:02d}\\n"
-                        send_telegram_msg(msg)
-                        
                         peak_time = top_peaks[0]
                         start_time, end_time = max(0, peak_time - 30), max(0, peak_time - 30) + 60
                         mins_s, secs_s = divmod(start_time, 60)
                         mins_e, secs_e = divmod(end_time, 60)
                         send_telegram_msg(f"✂️ Mengambil Juara 1: {mins_s:02d}:{secs_s:02d} - {mins_e:02d}:{secs_e:02d}")
                         download_section = f'--download-sections "*{start_time}-{end_time}"'
-                    else:
-                        download_section = '--download-sections "*0-60"'
-                else:
-                    send_telegram_msg("⚠️ Heatmap kosong. Memotong 1 menit pertama...")
-                    download_section = '--download-sections "*0-60"'
-            except Exception:
-                download_section = '--download-sections "*0-60"'
+                    else: download_section = '--download-sections "*0-60"'
+                else: download_section = '--download-sections "*0-60"'
+            except Exception: download_section = '--download-sections "*0-60"'
         
         send_telegram_msg("⬇️ Sedang mengunduh klip video...")
         download_cmd = f'yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" {download_section} -o "input.mp4" {URL}'
         subprocess.run(download_cmd, shell=True, check=True)
         
-        # --- PENENTUAN MODE CROP ---
         if FACE_POS in ['auto', 'br', 'bl', 'tr', 'tl']:
-            send_telegram_msg(f"🧠 AI memindai tata letak (Mode: {FACE_POS.upper()})...")
             mode, data = analyze_video("input.mp4", FACE_POS)
         else:
             mode = "irl"
             data = "bypass" 
 
-        # --- EKSEKUSI FFMPEG (DENGAN UNIVERSAL FAILSAFE) ---
-        if mode == "split_dynamic":
+        # --- EKSEKUSI FFMPEG (3 VARIAN SPLIT) ---
+        if mode == "split_giant":
             c_x, c_y, c_w, c_h = data
-            send_telegram_msg("🎮 AI: Split Screen dengan ukuran wajah presisi!")
+            send_telegram_msg("🐘 AI: Facecam Raksasa Terdeteksi! Membagi layar 50/50 secara simetris...")
+            # Gameplay 1080x960 (Rasio 9:8), Facecam 1080x960. Total = 1080x1920
+            filter_complex = (
+                f"[0:v]crop=ih*(9/8):ih:(iw-ow)/2:0,scale=1080:960[top]; "
+                f"[0:v]crop=iw*{c_w}:ih*{c_h}:iw*{c_x}:ih*{c_y},scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[bottom]; "
+                f"[top][bottom]vstack[outv]"
+            )
+            ffmpeg_cmd = f'ffmpeg -i input.mp4 -filter_complex "{filter_complex}" -map "[outv]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
+
+        elif mode == "split_dynamic":
+            c_x, c_y, c_w, c_h = data
+            send_telegram_msg("🎮 AI: Facecam Normal. Membagi layar 60/40...")
+            # Gameplay 1080x1200, Facecam 1080x720
             filter_complex = (
                 f"[0:v]crop=ih*0.9:ih:(iw-ow)/2:0,scale=1080:1200[top]; "
                 f"[0:v]crop=iw*{c_w}:ih*{c_h}:iw*{c_x}:ih*{c_y},scale=1080:720:force_original_aspect_ratio=increase,crop=1080:720[bottom]; "
@@ -191,7 +189,7 @@ def run_worker():
             ffmpeg_cmd = f'ffmpeg -i input.mp4 -filter_complex "{filter_complex}" -map "[outv]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
             
         elif mode == "split_static":
-            send_telegram_msg(f"⚠️ Menggunakan ukuran Facecam Kasar di posisi {data.upper()} (Failsafe)...")
+            send_telegram_msg(f"⚠️ Failsafe Facecam ({data.upper()})...")
             if data == "br": face_pos_str = "iw-ow:ih-oh"
             elif data == "bl": face_pos_str = "0:ih-oh"
             elif data == "tr": face_pos_str = "iw-ow:0"
@@ -204,13 +202,12 @@ def run_worker():
             ffmpeg_cmd = f'ffmpeg -i input.mp4 -filter_complex "{filter_complex}" -map "[outv]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
             
         elif mode == "irl" and FACE_POS == "irl":
-            send_telegram_msg("👤 Manual: Memaksa potong vertikal tengah layar (Bypass AI)")
+            send_telegram_msg("👤 Manual: Bypass Potong Tengah")
             ffmpeg_cmd = 'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
             
         else:
-            # UNIVERSAL FAILSAFE: Apa pun yang terjadi, perintah ini akan menyelematkan video
             face_x = data if isinstance(data, (float, int)) else 0.5
-            send_telegram_msg("👤 AI/Fallback: Memotong area tengah layar (Smart Center/Default)")
+            send_telegram_msg("👤 AI: IRL/Karakter Game (Smart Center)")
             x_expr = f"iw*{face_x} - ow/2"
             ffmpeg_cmd = f'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih:{x_expr}:0" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
             
@@ -232,89 +229,44 @@ run_worker()
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     if message.chat.id != ALLOWED_USER_ID: return bot.reply_to(message, "⛔ Akses Ditolak.")
-    pesan_bantuan = (
-        "🤖 *Bot YouTube Clipper AI*\n\n"
-        "Kirim link YouTube, dan biarkan AI yang berpikir!\n\n"
-        "🛠️ *Kode Perintah Tambahan (Opsional):*\n"
-        "Ketik kode ini setelah URL jika AI salah tebak:\n"
-        "`irl` = Paksa potong tengah (Tanpa Facecam)\n"
-        "`br`  = Paksa AI Fokus di Kanan Bawah\n"
-        "`bl`  = Paksa AI Fokus di Kiri Bawah\n"
-        "`tr`  = Paksa AI Fokus di Kanan Atas\n"
-        "`tl`  = Paksa AI Fokus di Kiri Atas\n\n"
-        "⏱️ *Manual Cut:*\n"
-        "`05:10-06:05`\n\n"
-        "Contoh gabungan: `https://youtu.be/xyz br 10:00-11:00`"
-    )
-    bot.reply_to(message, pesan_bantuan, parse_mode="Markdown")
+    bot.reply_to(message, "🤖 *Bot YouTube Clipper AI Ready!*", parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: True)
 def handle_youtube_link(message):
     if message.chat.id != ALLOWED_USER_ID: return
-    
     args = message.text.strip().split()
     url = args[0]
-    
     if "youtube.com" not in url and "youtu.be" not in url:
-        return bot.reply_to(message, "⚠️ Mohon kirimkan link YouTube yang valid.")
+        return bot.reply_to(message, "⚠️ Kirimkan link YouTube yang valid.")
 
-    manual_time = "none"
-    face_pos = "auto"
-    
+    manual_time, face_pos = "none", "auto"
     for arg in args[1:]:
-        if arg.lower() in ['br', 'bl', 'tr', 'tl', 'irl']:
-            face_pos = arg.lower()
-        elif "-" in arg and (":" in arg or arg.replace("-", "").isdigit()):
-            manual_time = arg
+        if arg.lower() in ['br', 'bl', 'tr', 'tl', 'irl']: face_pos = arg.lower()
+        elif "-" in arg and (":" in arg or arg.replace("-", "").isdigit()): manual_time = arg
 
-    info_mode = "🤖 100% Otomatis" if face_pos == "auto" else f"🎯 AI Fokus Area ({face_pos.upper()})"
-    info_time = "Otomatis (Heatmap)" if manual_time == "none" else manual_time
-    
-    bot.reply_to(message, f"⏳ Link diterima!\nMode Wajah: {info_mode}\nWaktu: {info_time}\nMengirim ke Kaggle...")
-
+    bot.reply_to(message, f"⏳ Link diterima!\nMengirim ke Kaggle...")
     os.makedirs("kaggle_task", exist_ok=True)
-
-    worker_vars = f"""
-URL = "{url}"
-CHAT_ID = "{message.chat.id}"
-BOT_TOKEN = "{TOKEN}"
-MANUAL_TIME = "{manual_time}"
-FACE_POS = "{face_pos}"
-"""
-    script_content = worker_vars + KAGGLE_WORKER_CODE
+    worker_vars = f'URL = "{url}"\nCHAT_ID = "{message.chat.id}"\nBOT_TOKEN = "{TOKEN}"\nMANUAL_TIME = "{manual_time}"\nFACE_POS = "{face_pos}"\n'
     
-    with open("kaggle_task/script.py", "w") as f:
-        f.write(script_content)
-
-    task_time = datetime.now().strftime("%Y%m%d-%H%M%S")
-    slug_id = f"yt-clipper-{task_time}"
-
+    with open("kaggle_task/script.py", "w") as f: f.write(worker_vars + KAGGLE_WORKER_CODE)
+    slug_id = f"yt-clipper-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    
     metadata = {
-      "id": f"{KAGGLE_USERNAME}/{slug_id}",
-      "title": slug_id,
-      "code_file": "script.py",
-      "language": "python",
-      "kernel_type": "script",
-      "is_private": "true",
-      "enable_gpu": "true",
-      "enable_internet": "true"
+      "id": f"{KAGGLE_USERNAME}/{slug_id}", "title": slug_id, "code_file": "script.py",
+      "language": "python", "kernel_type": "script", "is_private": "true",
+      "enable_gpu": "true", "enable_internet": "true"
     }
-    with open("kaggle_task/kernel-metadata.json", "w") as f:
-        json.dump(metadata, f)
+    with open("kaggle_task/kernel-metadata.json", "w") as f: json.dump(metadata, f)
 
     try:
-        subprocess.run(["kaggle", "kernels", "push", "-p", "kaggle_task"], check=True, capture_output=True, text=True)
-        bot.send_message(message.chat.id, f"✅ Tugas `{slug_id}` sukses dikirim ke Pabrik AI Kaggle!")
+        subprocess.run(["kaggle", "kernels", "push", "-p", "kaggle_task"], check=True)
+        bot.send_message(message.chat.id, f"✅ Tugas sukses dikirim ke Pabrik AI Kaggle!")
     except subprocess.CalledProcessError as e:
-        error_detail = e.stderr if e.stderr else e.stdout
-        bot.send_message(message.chat.id, f"❌ Gagal mengirim tugas.\n\nDetail:\n{error_detail}")
+        bot.send_message(message.chat.id, f"❌ Gagal mengirim tugas.")
 
-# --- 4. WEB SERVER UNTUK KOYEB ---
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Bot Clipper Aktif!"
-def run_web_server(): app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
-
+def home(): return "Bot Aktif!"
 if __name__ == "__main__":
-    Thread(target=run_web_server).start()
+    Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))).start()
     bot.infinity_polling()
