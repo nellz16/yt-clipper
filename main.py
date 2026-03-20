@@ -25,7 +25,7 @@ def fmt_t(seconds):
     m, s = divmod(r, 60)
     return f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
 
-# --- KODE PEKERJA CLOUD (KAGGLE) ---
+# --- KODE PEKERJA CLOUD ---
 CLOUD_WORKER_CODE = r"""
 import os
 import subprocess
@@ -38,8 +38,10 @@ import numpy as np
 def edit_msg(text, pct):
     bar = "█" * (pct // 10) + "░" * (10 - (pct // 10))
     full_text = f"[{bar}] {pct}% - {text}"
-    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText", 
-                  data={"chat_id": CHAT_ID, "message_id": MSG_ID, "text": full_text})
+    try:
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText", 
+                      data={"chat_id": CHAT_ID, "message_id": MSG_ID, "text": full_text})
+    except: pass
 
 def fmt_t(seconds):
     h, r = divmod(int(seconds), 3600)
@@ -150,8 +152,10 @@ def main_process():
                         s_t, e_t = max(0, peak - 30), max(0, peak - 30) + 60
                         ref_text += f"{medals[i]} Juara {i+1}: `{fmt_t(s_t)}-{fmt_t(e_t)}`\n"
                     
-                    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", 
-                        data={"chat_id": CHAT_ID, "text": ref_text, "parse_mode": "Markdown"})
+                    try:
+                        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", 
+                            data={"chat_id": CHAT_ID, "text": ref_text, "parse_mode": "Markdown"})
+                    except: pass
                     
                     edit_msg(f"Mengunduh cuplikan Juara 1...", 40)
                     dl_cmd = f'yt-dlp {impersonate_target} -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{peak1_s}-{peak1_e}" --force-keyframes-at-cuts -o "input.mp4" "{URL}"'
@@ -174,7 +178,6 @@ def main_process():
 
     edit_msg("Merender mahakarya video...", 80)
     
-    # PERBAIKAN FFMPEG: Penambahan flags=bicubic & setsar=1 untuk merapatkan sub-pixel gap
     if mode == "pad":
         cmd = 'ffmpeg -i input.mp4 -vf "scale=1080:-2:flags=bicubic,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
     elif mode == "split_giant":
@@ -322,17 +325,20 @@ def handle_mode_selection(call):
 def trigger_auto_run(call):
     chat_id = call.message.chat.id
     if chat_id not in user_states: return
-    dispatch_cloud_task(chat_id, call.message.message_id, manual_time="none")
+    
+    # Pesan awal saat diklik lewat tombol
+    msg = bot.edit_message_text("⏳ Membuat task baru...", chat_id=chat_id, message_id=call.message.message_id)
+    dispatch_cloud_task(chat_id, msg.message_id, manual_time="none")
 
 @bot.message_handler(func=lambda message: "-" in message.text and message.chat.id in user_states and 'mode' in user_states[message.chat.id])
 def handle_manual_time(message):
     chat_id = message.chat.id
     manual_time = message.text.strip()
-    # Mengirim placeholder message pertama
+    
+    # Pesan awal saat dikirim via chat
     msg = bot.send_message(chat_id, "⏳ Membuat task baru...")
     dispatch_cloud_task(chat_id, msg.message_id, manual_time=manual_time)
 
-# PENGAWAS BACKGROUND
 def monitor_cloud_task(chat_id, slug_id):
     fail_count = 0
     while fail_count < 15:
@@ -355,15 +361,19 @@ def dispatch_cloud_task(chat_id, msg_id, manual_time):
     
     user_states[chat_id]['status'] = 'processing'
     
-    # Jika trigger dari tombol run_auto, pesannya di-edit. Jika dari manual time, pesan sebelumnya sudah terkirim.
-    bot.edit_message_text("⏳ Membuat task baru...", chat_id=chat_id, message_id=msg_id)
+    # BUG FIX TELEGRAM 400: Gunakan try-except untuk mencegah bentrok teks ganda.
+    # Kita menggunakan kata yang sedikit berbeda ("Menghubungkan ke Mesin Cloud") agar tidak sama persis dengan "Membuat task baru...".
+    try:
+        bot.edit_message_text("⏳ Menghubungkan ke Mesin Cloud...", chat_id=chat_id, message_id=msg_id)
+    except Exception:
+        pass
     
     os.makedirs("kaggle_task", exist_ok=True)
     worker_vars = f'URL = "{url}"\nCHAT_ID = "{chat_id}"\nMSG_ID = "{msg_id}"\nBOT_TOKEN = "{TOKEN}"\nMANUAL_TIME = "{manual_time}"\nFACE_POS = "{face_pos}"\n'
     
     with open("kaggle_task/script.py", "w") as f: f.write(worker_vars + CLOUD_WORKER_CODE)
     
-    # 1 NAMA TASK PERMANEN (STATIC VERSIONING) - Menggantikan Auto Delete
+    # STATIC VERSIONING: Menggunakan 1 nama task saja (akan tertimpa terus dan otomatis versi-nya naik di Kaggle)
     slug_id = "ai-video-processor-engine"
     
     metadata = {
@@ -380,7 +390,7 @@ def dispatch_cloud_task(chat_id, msg_id, manual_time):
 
     try:
         subprocess.run(["kaggle", "kernels", "push", "-p", "kaggle_task"], check=True)
-        # Sesuai request: Ubah pesan setelah berhasil push
+        # Setelah sukses terkirim, ubah pesannya menjadi:
         bot.edit_message_text("✅ Berhasil, sedang dalam antrian...", chat_id=chat_id, message_id=msg_id)
         Thread(target=monitor_cloud_task, args=(chat_id, slug_id)).start()
     except Exception:
