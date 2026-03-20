@@ -9,9 +9,6 @@ import logging
 import time
 from datetime import datetime
 
-# Menggunakan Python API resmi Kaggle untuk menghapus task
-from kaggle.api.kaggle_api_extended import KaggleApi
-
 # --- MENGHENINGKAN LOG KOYEB ---
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
@@ -21,10 +18,6 @@ ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID", 0))
 KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME")
 
 bot = telebot.TeleBot(TOKEN)
-
-api = KaggleApi()
-api.authenticate()
-
 user_states = {}
 
 def fmt_t(seconds):
@@ -32,7 +25,7 @@ def fmt_t(seconds):
     m, s = divmod(r, 60)
     return f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
 
-# --- KODE PEKERJA CLOUD (MESIN PENGGERAK UTAMA) ---
+# --- KODE PEKERJA CLOUD (KAGGLE) ---
 CLOUD_WORKER_CODE = r"""
 import os
 import subprocess
@@ -181,26 +174,26 @@ def main_process():
 
     edit_msg("Merender mahakarya video...", 80)
     
-    # PERBAIKAN BUG GARIS HITAM: Memaksa video untuk mengisi seluruh ruang canvas tanpa celah hitam
+    # PERBAIKAN FFMPEG: Penambahan flags=bicubic & setsar=1 untuk merapatkan sub-pixel gap
     if mode == "pad":
-        cmd = 'ffmpeg -i input.mp4 -vf "scale=1080:-2,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
+        cmd = 'ffmpeg -i input.mp4 -vf "scale=1080:-2:flags=bicubic,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
     elif mode == "split_giant":
         c_x, c_y, c_w, c_h = data
-        fc = f"[0:v]scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[top]; [0:v]crop=iw*{c_w}:ih*{c_h}:iw*{c_x}:ih*{c_y},scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[bottom]; [top][bottom]vstack[outv]"
+        fc = f"[0:v]crop=ih*(9/8):ih:(iw-ow)/2:0,scale=1080:960:flags=bicubic,setsar=1[top]; [0:v]crop=iw*{c_w}:ih*{c_h}:iw*{c_x}:ih*{c_y},scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960,setsar=1[bottom]; [top][bottom]vstack[outv]"
         cmd = f'ffmpeg -i input.mp4 -filter_complex "{fc}" -map "[outv]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
     elif mode == "split_dynamic":
         c_x, c_y, c_w, c_h = data
-        fc = f"[0:v]scale=1080:1200:force_original_aspect_ratio=increase,crop=1080:1200[top]; [0:v]crop=iw*{c_w}:ih*{c_h}:iw*{c_x}:ih*{c_y},scale=1080:720:force_original_aspect_ratio=increase,crop=1080:720[bottom]; [top][bottom]vstack[outv]"
+        fc = f"[0:v]crop=ih*(9/10):ih:(iw-ow)/2:0,scale=1080:1200:flags=bicubic,setsar=1[top]; [0:v]crop=iw*{c_w}:ih*{c_h}:iw*{c_x}:ih*{c_y},scale=1080:720:force_original_aspect_ratio=increase,crop=1080:720,setsar=1[bottom]; [top][bottom]vstack[outv]"
         cmd = f'ffmpeg -i input.mp4 -filter_complex "{fc}" -map "[outv]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
     elif mode == "split_static":
         p = "iw-ow:ih-oh" if data=="br" else "0:ih-oh" if data=="bl" else "iw-ow:0" if data=="tr" else "0:0"
-        fc = f"[0:v]scale=1080:1200:force_original_aspect_ratio=increase,crop=1080:1200[top]; [0:v]crop=iw/3:ih/3:{p},scale=1080:720:force_original_aspect_ratio=increase,crop=1080:720[bottom]; [top][bottom]vstack[outv]"
+        fc = f"[0:v]crop=ih*(9/10):ih:(iw-ow)/2:0,scale=1080:1200:flags=bicubic,setsar=1[top]; [0:v]crop=ih*0.5:ih*0.333:{p},scale=1080:720:force_original_aspect_ratio=increase,crop=1080:720,setsar=1[bottom]; [top][bottom]vstack[outv]"
         cmd = f'ffmpeg -i input.mp4 -filter_complex "{fc}" -map "[outv]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
     elif mode == "irl" and FACE_POS == "irl":
-        cmd = 'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih:iw/2-ow/2:0,scale=1080:1920" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
+        cmd = 'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih,setsar=1" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
     else:
         fx = data if isinstance(data, (float, int)) else 0.5
-        cmd = f'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih:iw*{fx}-ow/2:0,scale=1080:1920" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
+        cmd = f'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih:iw*{fx}-ow/2:0,setsar=1" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
         
     run_cmd(cmd)
     edit_msg("Selesai! Mengunggah hasil ke Telegram...", 100)
@@ -329,20 +322,17 @@ def handle_mode_selection(call):
 def trigger_auto_run(call):
     chat_id = call.message.chat.id
     if chat_id not in user_states: return
-    
-    # PERUBAHAN PESAN ALUR (Membuat task baru -> Antrian -> Progress Kaggle)
-    bot.edit_message_text("⏳ Membuat task baru...", chat_id=chat_id, message_id=call.message.message_id)
     dispatch_cloud_task(chat_id, call.message.message_id, manual_time="none")
 
 @bot.message_handler(func=lambda message: "-" in message.text and message.chat.id in user_states and 'mode' in user_states[message.chat.id])
 def handle_manual_time(message):
     chat_id = message.chat.id
     manual_time = message.text.strip()
-    
-    # PERUBAHAN PESAN ALUR 
+    # Mengirim placeholder message pertama
     msg = bot.send_message(chat_id, "⏳ Membuat task baru...")
     dispatch_cloud_task(chat_id, msg.message_id, manual_time=manual_time)
 
+# PENGAWAS BACKGROUND
 def monitor_cloud_task(chat_id, slug_id):
     fail_count = 0
     while fail_count < 15:
@@ -351,15 +341,11 @@ def monitor_cloud_task(chat_id, slug_id):
             res = subprocess.check_output(["kaggle", "kernels", "status", f"{KAGGLE_USERNAME}/{slug_id}"], text=True)
             if any(x in res.lower() for x in ["complete", "error", "cancel"]):
                 if chat_id in user_states: del user_states[chat_id]
-                try: api.kernel_delete(KAGGLE_USERNAME, slug_id)
-                except: pass
                 break
         except Exception:
             fail_count += 1
             if fail_count >= 15:
                 if chat_id in user_states: del user_states[chat_id]
-                try: api.kernel_delete(KAGGLE_USERNAME, slug_id)
-                except: pass
                 break
 
 def dispatch_cloud_task(chat_id, msg_id, manual_time):
@@ -369,16 +355,20 @@ def dispatch_cloud_task(chat_id, msg_id, manual_time):
     
     user_states[chat_id]['status'] = 'processing'
     
+    # Jika trigger dari tombol run_auto, pesannya di-edit. Jika dari manual time, pesan sebelumnya sudah terkirim.
+    bot.edit_message_text("⏳ Membuat task baru...", chat_id=chat_id, message_id=msg_id)
+    
     os.makedirs("kaggle_task", exist_ok=True)
     worker_vars = f'URL = "{url}"\nCHAT_ID = "{chat_id}"\nMSG_ID = "{msg_id}"\nBOT_TOKEN = "{TOKEN}"\nMANUAL_TIME = "{manual_time}"\nFACE_POS = "{face_pos}"\n'
     
     with open("kaggle_task/script.py", "w") as f: f.write(worker_vars + CLOUD_WORKER_CODE)
     
-    slug_id = "video-processing-engine"
+    # 1 NAMA TASK PERMANEN (STATIC VERSIONING) - Menggantikan Auto Delete
+    slug_id = "ai-video-processor-engine"
     
     metadata = {
       "id": f"{KAGGLE_USERNAME}/{slug_id}", 
-      "title": "Video Processing Engine", 
+      "title": "AI Video Processor Engine", 
       "code_file": "script.py",
       "language": "python", 
       "kernel_type": "script", 
@@ -390,8 +380,8 @@ def dispatch_cloud_task(chat_id, msg_id, manual_time):
 
     try:
         subprocess.run(["kaggle", "kernels", "push", "-p", "kaggle_task"], check=True)
-        # Menampilkan pesan berhasil masuk antrian
-        bot.edit_message_text("✅ Berhasil, sedang dalam antrian...\n\n_(Menunggu server Cloud merespons, biasanya memakan waktu 1-3 menit)_", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
+        # Sesuai request: Ubah pesan setelah berhasil push
+        bot.edit_message_text("✅ Berhasil, sedang dalam antrian...", chat_id=chat_id, message_id=msg_id)
         Thread(target=monitor_cloud_task, args=(chat_id, slug_id)).start()
     except Exception:
         bot.edit_message_text("❌ Gagal terhubung ke Mesin Cloud.", chat_id=chat_id, message_id=msg_id)
