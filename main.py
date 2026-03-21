@@ -8,7 +8,6 @@ from threading import Thread
 import logging
 import time
 from datetime import datetime
-from kaggle.api.kaggle_api_extended import KaggleApi
 
 # --- MENGHENINGKAN LOG KOYEB ---
 log = logging.getLogger('werkzeug')
@@ -19,8 +18,6 @@ ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID", 0))
 KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME")
 
 bot = telebot.TeleBot(TOKEN)
-api = KaggleApi()
-api.authenticate()
 
 user_states = {}
 
