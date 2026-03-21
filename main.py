@@ -8,6 +8,7 @@ from threading import Thread
 import logging
 import time
 from datetime import datetime
+from kaggle.api.kaggle_api_extended import KaggleApi
 
 # --- MENGHENINGKAN LOG KOYEB ---
 log = logging.getLogger('werkzeug')
@@ -18,6 +19,9 @@ ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID", 0))
 KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME")
 
 bot = telebot.TeleBot(TOKEN)
+api = KaggleApi()
+api.authenticate()
+
 user_states = {}
 
 def fmt_t(seconds):
@@ -25,7 +29,7 @@ def fmt_t(seconds):
     m, s = divmod(r, 60)
     return f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
 
-# --- KODE PEKERJA CLOUD ---
+# --- KODE PEKERJA CLOUD (PERFORMA TINGGI & MICRO-ZOOM) ---
 CLOUD_WORKER_CODE = r"""
 import os
 import subprocess
@@ -66,7 +70,10 @@ def analyze_video(video_path, requested_pos):
                 cap.set(cv2.CAP_PROP_POS_FRAMES, i * step)
                 ret, frame = cap.read()
                 if not ret: break
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                frame_resized = cv2.resize(frame, (640, 360))
+                rgb_frame = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
+                
                 results = face_detection.process(rgb_frame)
                 if results.detections:
                     for detection in results.detections:
@@ -126,7 +133,6 @@ def main_process():
         edit_msg(f"Mengunduh cuplikan [{MANUAL_TIME}]...", 30)
         dl_cmd = f'yt-dlp {impersonate_target} -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{MANUAL_TIME}" --force-keyframes-at-cuts -o "input.mp4" "{URL}"'
         run_cmd(dl_cmd)
-
     else:
         edit_msg("Memindai Grafik Keramaian (Mencari Top 5)...", 20)
         try:
@@ -144,7 +150,6 @@ def main_process():
                 if top_peaks:
                     peak1_s, peak1_e = max(0, top_peaks[0] - 30), max(0, top_peaks[0] - 30) + 60
                     target_time = f"{fmt_t(peak1_s)}-{fmt_t(peak1_e)}"
-                    
                     ref_text = f"🔥 *Mengambil Juara 1 otomatis:* `{target_time}`\n\n*Referensi Momen Lainnya:*\n_(Klik teks angka untuk copy manual)_\n"
                     medals = ["🥇", "🥈", "🥉", "🏅", "🏅"]
                     for i, peak in enumerate(top_peaks):
@@ -158,8 +163,7 @@ def main_process():
                     except: pass
                     
                     edit_msg(f"Mengunduh cuplikan Juara 1...", 40)
-                    dl_cmd = f'yt-dlp {impersonate_target} -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{peak1_s}-{peak1_e}" --force-keyframes-at-cuts -o "input.mp4" "{URL}"'
-                    run_cmd(dl_cmd)
+                    run_cmd(f'yt-dlp {impersonate_target} -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*{peak1_s}-{peak1_e}" --force-keyframes-at-cuts -o "input.mp4" "{URL}"')
                 else:
                     edit_msg("Heatmap tidak valid. Mengunduh 1 menit pertama...", 40)
                     run_cmd(f'yt-dlp {impersonate_target} -f "bestvideo+bestaudio/best" --merge-output-format mp4 --download-sections "*0-60" -o "input.mp4" "{URL}"')
@@ -178,25 +182,28 @@ def main_process():
 
     edit_msg("Merender mahakarya video...", 80)
     
+    ffmpeg_base = "ffmpeg -i input.mp4 -filter_complex"
+    ffmpeg_out = "-map \"[final]\" -map 0:a -c:v libx264 -preset veryfast -crf 23 -threads 4 -c:a copy -y output.mp4"
+    
     if mode == "pad":
-        cmd = 'ffmpeg -i input.mp4 -vf "scale=1080:-2:flags=bicubic,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
+        cmd = 'ffmpeg -i input.mp4 -vf "scale=1080:-2:flags=bicubic,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=yuv420p" -c:v libx264 -preset veryfast -crf 23 -threads 4 -c:a copy -y output.mp4'
     elif mode == "split_giant":
         c_x, c_y, c_w, c_h = data
-        fc = f"[0:v]crop=ih*(9/8):ih:(iw-ow)/2:0,scale=1080:960:flags=bicubic,setsar=1[top]; [0:v]crop=iw*{c_w}:ih*{c_h}:iw*{c_x}:ih*{c_y},scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960,setsar=1[bottom]; [top][bottom]vstack[outv]"
-        cmd = f'ffmpeg -i input.mp4 -filter_complex "{fc}" -map "[outv]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
+        fc = f"[0:v]crop=ih*(9/8):ih:(iw-ow)/2:0,scale=1080:970:flags=bicubic,force_original_aspect_ratio=increase,crop=1080:960,setsar=1[top]; [0:v]crop=iw*{c_w}:ih*{c_h}:iw*{c_x}:ih*{c_y},scale=1080:970:flags=bicubic,force_original_aspect_ratio=increase,crop=1080:960,setsar=1[bottom]; [top][bottom]vstack[outv]; [outv]format=yuv420p[final]"
+        cmd = f'{ffmpeg_base} "{fc}" {ffmpeg_out}'
     elif mode == "split_dynamic":
         c_x, c_y, c_w, c_h = data
-        fc = f"[0:v]crop=ih*(9/10):ih:(iw-ow)/2:0,scale=1080:1200:flags=bicubic,setsar=1[top]; [0:v]crop=iw*{c_w}:ih*{c_h}:iw*{c_x}:ih*{c_y},scale=1080:720:force_original_aspect_ratio=increase,crop=1080:720,setsar=1[bottom]; [top][bottom]vstack[outv]"
-        cmd = f'ffmpeg -i input.mp4 -filter_complex "{fc}" -map "[outv]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
+        fc = f"[0:v]crop=ih*(9/10):ih:(iw-ow)/2:0,scale=1080:1210:flags=bicubic,force_original_aspect_ratio=increase,crop=1080:1200,setsar=1[top]; [0:v]crop=iw*{c_w}:ih*{c_h}:iw*{c_x}:ih*{c_y},scale=1080:730:flags=bicubic,force_original_aspect_ratio=increase,crop=1080:720,setsar=1[bottom]; [top][bottom]vstack[outv]; [outv]format=yuv420p[final]"
+        cmd = f'{ffmpeg_base} "{fc}" {ffmpeg_out}'
     elif mode == "split_static":
         p = "iw-ow:ih-oh" if data=="br" else "0:ih-oh" if data=="bl" else "iw-ow:0" if data=="tr" else "0:0"
-        fc = f"[0:v]crop=ih*(9/10):ih:(iw-ow)/2:0,scale=1080:1200:flags=bicubic,setsar=1[top]; [0:v]crop=ih*0.5:ih*0.333:{p},scale=1080:720:force_original_aspect_ratio=increase,crop=1080:720,setsar=1[bottom]; [top][bottom]vstack[outv]"
-        cmd = f'ffmpeg -i input.mp4 -filter_complex "{fc}" -map "[outv]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
+        fc = f"[0:v]crop=ih*(9/10):ih:(iw-ow)/2:0,scale=1080:1210:flags=bicubic,force_original_aspect_ratio=increase,crop=1080:1200,setsar=1[top]; [0:v]crop=ih*0.5:ih*0.333:{p},scale=1080:730:flags=bicubic,force_original_aspect_ratio=increase,crop=1080:720,setsar=1[bottom]; [top][bottom]vstack[outv]; [outv]format=yuv420p[final]"
+        cmd = f'{ffmpeg_base} "{fc}" {ffmpeg_out}'
     elif mode == "irl" and FACE_POS == "irl":
-        cmd = 'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih,setsar=1" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
+        cmd = 'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih,setsar=1,format=yuv420p" -c:v libx264 -preset veryfast -crf 23 -threads 4 -c:a copy -y output.mp4'
     else:
         fx = data if isinstance(data, (float, int)) else 0.5
-        cmd = f'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih:iw*{fx}-ow/2:0,setsar=1" -c:v libx264 -preset fast -crf 23 -c:a copy -y output.mp4'
+        cmd = f'ffmpeg -i input.mp4 -vf "crop=ih*9/16:ih:iw*{fx}-ow/2:0,setsar=1,format=yuv420p" -c:v libx264 -preset veryfast -crf 23 -threads 4 -c:a copy -y output.mp4'
         
     run_cmd(cmd)
     edit_msg("Selesai! Mengunggah hasil ke Telegram...", 100)
@@ -326,16 +333,14 @@ def trigger_auto_run(call):
     chat_id = call.message.chat.id
     if chat_id not in user_states: return
     
-    # Pesan awal saat diklik lewat tombol
-    msg = bot.edit_message_text("⏳ Membuat task baru...", chat_id=chat_id, message_id=call.message.message_id)
-    dispatch_cloud_task(chat_id, msg.message_id, manual_time="none")
+    try: bot.edit_message_text("⏳ Membuat task baru...", chat_id=chat_id, message_id=call.message.message_id)
+    except: pass
+    dispatch_cloud_task(chat_id, call.message.message_id, manual_time="none")
 
 @bot.message_handler(func=lambda message: "-" in message.text and message.chat.id in user_states and 'mode' in user_states[message.chat.id])
 def handle_manual_time(message):
     chat_id = message.chat.id
     manual_time = message.text.strip()
-    
-    # Pesan awal saat dikirim via chat
     msg = bot.send_message(chat_id, "⏳ Membuat task baru...")
     dispatch_cloud_task(chat_id, msg.message_id, manual_time=manual_time)
 
@@ -361,19 +366,11 @@ def dispatch_cloud_task(chat_id, msg_id, manual_time):
     
     user_states[chat_id]['status'] = 'processing'
     
-    # BUG FIX TELEGRAM 400: Gunakan try-except untuk mencegah bentrok teks ganda.
-    # Kita menggunakan kata yang sedikit berbeda ("Menghubungkan ke Mesin Cloud") agar tidak sama persis dengan "Membuat task baru...".
-    try:
-        bot.edit_message_text("⏳ Menghubungkan ke Mesin Cloud...", chat_id=chat_id, message_id=msg_id)
-    except Exception:
-        pass
-    
     os.makedirs("kaggle_task", exist_ok=True)
     worker_vars = f'URL = "{url}"\nCHAT_ID = "{chat_id}"\nMSG_ID = "{msg_id}"\nBOT_TOKEN = "{TOKEN}"\nMANUAL_TIME = "{manual_time}"\nFACE_POS = "{face_pos}"\n'
     
     with open("kaggle_task/script.py", "w") as f: f.write(worker_vars + CLOUD_WORKER_CODE)
     
-    # STATIC VERSIONING: Menggunakan 1 nama task saja (akan tertimpa terus dan otomatis versi-nya naik di Kaggle)
     slug_id = "ai-video-processor-engine"
     
     metadata = {
@@ -390,11 +387,12 @@ def dispatch_cloud_task(chat_id, msg_id, manual_time):
 
     try:
         subprocess.run(["kaggle", "kernels", "push", "-p", "kaggle_task"], check=True)
-        # Setelah sukses terkirim, ubah pesannya menjadi:
-        bot.edit_message_text("✅ Berhasil, sedang dalam antrian...", chat_id=chat_id, message_id=msg_id)
+        try: bot.edit_message_text("✅ Berhasil, sedang dalam antrian...", chat_id=chat_id, message_id=msg_id)
+        except: pass
         Thread(target=monitor_cloud_task, args=(chat_id, slug_id)).start()
     except Exception:
-        bot.edit_message_text("❌ Gagal terhubung ke Mesin Cloud.", chat_id=chat_id, message_id=msg_id)
+        try: bot.edit_message_text("❌ Gagal terhubung ke Mesin Cloud.", chat_id=chat_id, message_id=msg_id)
+        except: pass
         if chat_id in user_states: del user_states[chat_id]
 
 # --- 4. WEB SERVER ---
